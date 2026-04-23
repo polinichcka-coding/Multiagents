@@ -92,7 +92,9 @@ public class UserAgent extends Agent {
 
             // Update Deck Count
             if (txt.startsWith("DECK_COUNT:")) {
-                int count = Integer.parseInt(txt.split(":")[1]);
+                //int count = Integer.parseInt(txt.split(":")[1]);
+                int count = Integer.parseInt(txt.split(":")[1].trim());
+
                 myGui.setDeckUI(count);
             }
             // Start of Game / Trump Info
