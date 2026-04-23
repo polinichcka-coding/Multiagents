@@ -9,6 +9,7 @@ import jade.domain.DFService;
 import jade.domain.FIPAAgentManagement.*;
 import proj1.ontology.*;
 import javax.swing.*;
+import java.awt.*;
 
 public class UserAgent extends Agent {
     private UserAgentGUI myGui;
@@ -16,11 +17,14 @@ public class UserAgent extends Agent {
     private String selectedServerName = null;
     private boolean inGame = false;
 
+    // MISS-CLICK PROTECTION: Holds the card until the server confirms the move is valid
+    private VisualCard pendingCard = null;
+
     protected void setup() {
         getContentManager().registerLanguage(codec);
         getContentManager().registerOntology(CardGameOntology.getInstance());
 
-        myGui = new UserAgentGUI();
+        myGui = new UserAgentGUI(this);
         myGui.setVisible(true);
         myGui.updateLog("Welcome! Press SCAN to find games.");
 
@@ -35,131 +39,154 @@ public class UserAgent extends Agent {
             }
         });
 
-        // --- ЛОГІКА КНОПОК ---
+        // "SCAN" becomes "TAKE CARDS" once in a game
         myGui.refreshButton.addActionListener(e -> {
-            if (!inGame) scanServers();
-            else sendTakeRequest();
+            if (!inGame) {
+                scanServers();
+            } else {
+                sendTakeRequest();
+            }
         });
 
         myGui.joinButton.addActionListener(e -> {
             selectedServerName = myGui.getSelectedGame();
             if (selectedServerName != null) {
-                myGui.updateLog("Connecting to " + selectedServerName + "...");
-                myGui.handListModel.clear();
+                System.out.println("🚀 Joining: " + selectedServerName);
+                myGui.clearHand();
                 SubscribeToGame sub = new SubscribeToGame();
                 sub.setGameName1(selectedServerName);
                 sendRequest(new AID(selectedServerName, AID.ISLOCALNAME), sub);
                 inGame = true;
                 myGui.refreshButton.setText("✋ TAKE CARDS");
-            } else {
-                myGui.updateLog("❌ Select a server first!");
-            }
-        });
-
-        myGui.playMoveButton.addActionListener(e -> {
-            String cardStr = myGui.getSelectedCard();
-            if (cardStr != null && inGame && selectedServerName != null) {
-                PlayMove m = new PlayMove();
-                Card c = parseCardString(cardStr);
-                m.setPlayedCard(c);
-                sendRequest(new AID(selectedServerName, AID.ISLOCALNAME), m);
-                myGui.handListModel.removeElement(cardStr);
             }
         });
     }
 
     private void handleIncoming(ACLMessage msg) {
-        // ТВОЇ ДЕБАГ-РЯДКИ
-        System.out.println("DEBUG: Прийшло повідомлення від " + msg.getSender().getLocalName() +
-                " з онтологією: " + msg.getOntology());
-
-        if (msg.getContent() != null) {
-            System.out.println("DEBUG: Сирий контент: " + msg.getContent());
-        }
-
-        // Ігноруємо технічне сміття JADE DF
-        if (msg.getContent() != null && msg.getContent().startsWith("((")) return;
+        if (msg.getSender().getLocalName().equalsIgnoreCase("df")) return;
 
         try {
             Object content = getContentManager().extractContent(msg);
+            if (content instanceof Action) content = ((Action) content).getAction();
 
+            // --- 1. HANDLE CARDS BEING DEALT/REFILLED ---
             if (content instanceof CardsDealt) {
                 CardsDealt cd = (CardsDealt) content;
                 jade.util.leap.Iterator it = cd.getCards().iterator();
-
+                int newCards = 0;
                 while (it.hasNext()) {
                     Card c = (Card) it.next();
                     if (c != null) {
-                        myGui.addCardToHand(c.getRank(), c.getSuit());
+                        myGui.addVisualCardToHand(c.getRank(), c.getSuit());
+                        newCards++;
                     }
                 }
-                myGui.updateLog("Success: " + cd.getCards().size() + " cards received.");
+                myGui.updateLog("📥 Received " + newCards + " cards.");
                 return;
             }
+
         } catch (Exception e) {
+            // --- 2. HANDLE TEXT COMMANDS FROM SERVER ---
             String txt = msg.getContent();
-            if (txt != null) {
-                if (txt.startsWith("ATTACK:")) {
-                    String[] p = txt.split(":");
-                    myGui.updateLog("⚠️ SERVER ATTACKS: " + p[1] + " of " + p[2]);
-                } else if (txt.startsWith("GAME_START:")) {
-                    myGui.updateLog("🎮 " + txt.substring(11));
-                } else {
-                    myGui.updateLog("SERVER: " + txt);
+            if (txt == null) return;
+
+            // Update Deck Count
+            if (txt.startsWith("DECK_COUNT:")) {
+                int count = Integer.parseInt(txt.split(":")[1]);
+                myGui.setDeckUI(count);
+            }
+            // Start of Game / Trump Info
+            else if (txt.startsWith("GAME_START:")) {
+                String trumpPart = txt.split(":")[1].replace("Trump is ", "");
+                String[] parts = trumpPart.split(" ");
+                String suitName = parts[0];
+                String icon = parts.length > 1 ? parts[1] : "";
+                myGui.setTrumpUI(suitName, icon);
+                myGui.setTurnUI(false); // Defending by default
+            }
+            // Server Attacks
+            else if (txt.startsWith("ATTACK:")) {
+                String[] p = txt.split(":");
+                myGui.showAttackOnTable(p[1], p[2]);
+                myGui.setTurnUI(false);
+            }
+            // Clear Table command (after the 2-second delay on server)
+            else if (txt.equals("CLEAR_TABLE")) {
+                myGui.clearTable();
+            }
+            // Turn Tracking
+            else if (txt.contains("Your turn to attack") || txt.contains("Attack me again")) {
+                myGui.setTurnUI(true);
+                if (pendingCard != null) { // Move was successful
+                    myGui.removeVisualCard(pendingCard);
+                    pendingCard = null;
                 }
+            }
+            // Move Confirmation (when you are defending)
+            else if (txt.contains("Correct!")) {
+                if (pendingCard != null) {
+                    myGui.removeVisualCard(pendingCard);
+                    pendingCard = null;
+                }
+                myGui.updateLog("✅ Defense accepted.");
+            }
+            // Handle Rejection
+            else if (txt.contains("Can't play") || txt.contains("Illegal move")) {
+                myGui.updateLog("❌ " + txt);
+                pendingCard = null; // Move failed, keep card in hand
+            }
+
+            else if (txt.startsWith("SERVER_BEAT:")) {
+                String[] parts = txt.split(":");
+                // Server is defending -> Gray card
+                myGui.addServerDefenseToTable(parts[1], parts[2]);
+            }
+
+            else if (txt.startsWith("SHOW_DEFENSE:")) {
+                String[] parts = txt.split(":");
+                // You are defending -> White card
+                myGui.addUserDefenseToTable(parts[1], parts[2]);
+            }
+            else {
+                myGui.updateLog(txt);
             }
         }
     }
 
-    private void scanServers() {
-        myGui.updateLog("Scanning...");
+    /**
+     * Called by VisualCard when clicked
+     */
+    public void playVisualCard(VisualCard visualCardComponent) {
+        if (inGame && selectedServerName != null) {
+            pendingCard = visualCardComponent;
 
-        // Створюємо окремий потік, щоб не вішати GUI
+            PlayMove m = new PlayMove();
+            Card c = new Card();
+            c.setRank(visualCardComponent.getRank());
+            c.setSuit(visualCardComponent.getSuit());
+            m.setPlayedCard(c);
+
+            System.out.println("[USER] Attempting to play: " + c.getRank() + " of " + c.getSuit());
+            sendRequest(new AID(selectedServerName, AID.ISLOCALNAME), m);
+        }
+    }
+
+    private void scanServers() {
         new Thread(() -> {
             DFAgentDescription template = new DFAgentDescription();
             ServiceDescription sd = new ServiceDescription();
             sd.setType("card-game-provider");
             template.addServices(sd);
-
             try {
-                // Пошук у DF (може зайняти час)
                 DFAgentDescription[] results = DFService.search(this, template);
-
-                // Оновлюємо GUI тільки через invokeLater
                 SwingUtilities.invokeLater(() -> {
                     myGui.gameListModel.clear();
-                    if (results.length == 0) {
-                        myGui.updateLog("No active servers found.");
-                    } else {
-                        for (DFAgentDescription dfd : results) {
-                            myGui.addGame(dfd.getName().getLocalName());
-                        }
-                        myGui.updateLog("Scan complete. Found " + results.length + " servers.");
+                    for (DFAgentDescription dfd : results) {
+                        myGui.addGame(dfd.getName().getLocalName());
                     }
                 });
-            } catch (Exception ex) {
-                SwingUtilities.invokeLater(() -> myGui.updateLog("Search failed: " + ex.getMessage()));
-                ex.printStackTrace();
-            }
+            } catch (Exception ex) { ex.printStackTrace(); }
         }).start();
-    }
-
-    private void sendTakeRequest() {
-        if (selectedServerName == null) return;
-        ACLMessage m = new ACLMessage(ACLMessage.REQUEST);
-        m.addReceiver(new AID(selectedServerName, AID.ISLOCALNAME));
-        m.setContent("TAKE_CARDS");
-        send(m);
-        myGui.updateLog("You requested to take cards.");
-    }
-
-    private Card parseCardString(String s) {
-        Card c = new Card();
-        String[] parts = s.split(" ");
-        c.setRank(parts[0]);
-        String suit = s.substring(s.indexOf("(") + 1, s.indexOf(")"));
-        c.setSuit(suit);
-        return c;
     }
 
     private void sendRequest(AID r, jade.content.AgentAction a) {
@@ -171,5 +198,15 @@ public class UserAgent extends Agent {
             getContentManager().fillContent(msg, new Action(r, a));
             send(msg);
         } catch (Exception e) { e.printStackTrace(); }
+    }
+
+    private void sendTakeRequest() {
+        if (selectedServerName != null) {
+            ACLMessage m = new ACLMessage(ACLMessage.REQUEST);
+            m.addReceiver(new AID(selectedServerName, AID.ISLOCALNAME));
+            m.setContent("TAKE_CARDS");
+            send(m);
+            myGui.updateLog("🏳️ Taking table cards...");
+        }
     }
 }
