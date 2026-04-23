@@ -142,10 +142,42 @@ public class UserAgent extends Agent {
                 myGui.addServerDefenseToTable(parts[1], parts[2]);
             }
 
+
+            // Inside handleIncoming text processing
+            else if (txt.startsWith("SHOW_ATTACK:")) {
+                String[] parts = txt.split(":");
+                // When YOU attack, show your card (White)
+                myGui.addUserAttackToTable(parts[1], parts[2]);
+                // Remove it from your hand immediately
+                if (pendingCard != null) {
+                    myGui.removeVisualCard(pendingCard);
+                    pendingCard = null;
+                }
+            }
             else if (txt.startsWith("SHOW_DEFENSE:")) {
                 String[] parts = txt.split(":");
-                // You are defending -> White card
                 myGui.addUserDefenseToTable(parts[1], parts[2]);
+            }
+            // Inside handleIncoming text processing
+            // Inside UserAgent.java -> handleIncoming text processing
+            else if (txt.startsWith("GAME_OVER:")) {
+                String result = txt.split(":")[1];
+
+                if (result.equals("YOU_WIN")) {
+                    myGui.displayEndGameMessage("You won!", Color.YELLOW);
+                    myGui.updateLog("🎉 You won the game!");
+                }
+                else if (result.equals("SERVER_WINS")) {
+                    myGui.displayEndGameMessage("You lose", Color.RED);
+                    myGui.updateLog("💀 Server won. Better luck next time!");
+                }
+                else {
+                    myGui.displayEndGameMessage("Draw", Color.WHITE);
+                    myGui.updateLog("🤝 No one wins!");
+                }
+
+                inGame = false;
+                myGui.refreshButton.setText("🔍 SCAN FOR LOBBIES");
             }
             else {
                 myGui.updateLog(txt);

@@ -236,4 +236,41 @@ public class UserAgentGUI extends JFrame {
             battlefieldPanel.repaint();
         });
     }
+
+    // When you start an attack (White card, clear table first)
+    public void addUserAttackToTable(String rank, String suit) {
+        SwingUtilities.invokeLater(() -> {
+            battlefieldPanel.removeAll(); // Clear previous bout
+            VisualCard card = new VisualCard(rank, suit, myAgent); // White
+            battlefieldPanel.add(card);
+            battlefieldPanel.revalidate();
+            battlefieldPanel.repaint();
+        });
+    }
+
+    public void displayEndGameMessage(String text, Color textColor) {
+        SwingUtilities.invokeLater(() -> {
+            // 1. Clear everything (cards and status)
+            battlefieldPanel.removeAll();
+
+            // 2. Create the big message
+            JLabel winLabel = new JLabel(text, SwingConstants.CENTER);
+            winLabel.setFont(new Font("Serif", Font.BOLD, 70));
+            winLabel.setForeground(textColor);
+
+            // 3. Add a glowing/shadow effect using HTML if you like
+            winLabel.setText("<html><div style='text-align: center;'>" + text + "</div></html>");
+
+            // 4. Center it in the battlefield
+            GridBagConstraints gbc = new GridBagConstraints();
+            gbc.gridx = 0; gbc.gridy = 0;
+            gbc.anchor = GridBagConstraints.CENTER;
+
+            battlefieldPanel.add(winLabel, gbc);
+
+            battlefieldPanel.revalidate();
+            battlefieldPanel.repaint();
+        });
+    }
+
 }
