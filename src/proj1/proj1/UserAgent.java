@@ -162,7 +162,7 @@ public class UserAgent extends Agent {
             else if (txt.startsWith("GAME_OVER:")) {
                 // ... твой код завершения игры ...
                 String result = txt.split(":")[1];
-                Color c = result.equals("YOU_WIN") ? Color.YELLOW : (result.equals("DRAW") ? Color.WHITE : Color.RED);
+                Color c = result.equals("YOU WIN") ? Color.ORANGE : (result.equals("DRAW") ? Color.WHITE : Color.RED);
                 myGui.displayEndGameMessage(result, c);
                 inGame = false;
                 myGui.refreshButton.setEnabled(true);
