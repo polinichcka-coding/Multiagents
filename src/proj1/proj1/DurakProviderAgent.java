@@ -289,7 +289,6 @@ public class DurakProviderAgent extends Agent {
                 needToSend = true;
             }
         }
-
         if (needToSend) {
             ACLMessage m = new ACLMessage(ACLMessage.INFORM);
             m.addReceiver(player);
@@ -330,6 +329,8 @@ public class DurakProviderAgent extends Agent {
             sendText(player, "❌ Table is empty.");
             return;
         }
+        System.out.println("\n[BOT DEBUG] Deck Remaining: " + deck.size());
+        // -------------------
 
         try {
             CardsDealt cd = new CardsDealt();
@@ -409,8 +410,7 @@ public class DurakProviderAgent extends Agent {
         for (String s : suits) {
             for (String r : ranks) {
                 Card c = new Card();
-                c.setSuit(s);
-                c.setRank(r);
+                c.setSuit(s); c.setRank(r);
                 deck.add(c);
             }
         }
@@ -418,9 +418,7 @@ public class DurakProviderAgent extends Agent {
         trumpSuit = suits[new Random().nextInt(4)];
     }
 
-    private Card drawCard() {
-        return deck.isEmpty() ? null : deck.remove(0);
-    }
+    private Card drawCard() { return deck.isEmpty() ? null : deck.remove(0); }
 
     private int getWeight(String r) {
         switch (r) {
@@ -465,10 +463,7 @@ public class DurakProviderAgent extends Agent {
         sd.setType("card-game-provider");
         sd.setName("DURAK-SERVER");
         dfd.addServices(sd);
-        try {
-            DFService.register(this, dfd);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        try { DFService.register(this, dfd); }
+        catch (Exception e) { e.printStackTrace(); }
     }
 }

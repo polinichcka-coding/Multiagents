@@ -266,4 +266,5 @@ public class UserAgentGUI extends JFrame {
             battlefieldPanel.repaint();
         });
     }
+
 }

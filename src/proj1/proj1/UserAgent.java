@@ -21,6 +21,9 @@ public class UserAgent extends Agent {
     // MISS-CLICK PROTECTION
     private VisualCard pendingCard = null;
 
+    // MISS-CLICK PROTECTION: Holds the card until the server confirms the move is valid
+    private VisualCard pendingCard = null;
+
     protected void setup() {
         getContentManager().registerLanguage(codec);
         getContentManager().registerOntology(CardGameOntology.getInstance());
@@ -115,6 +118,7 @@ public class UserAgent extends Agent {
             Object content = getContentManager().extractContent(msg);
             if (content instanceof Action) content = ((Action) content).getAction();
 
+            // --- 1. HANDLE CARDS BEING DEALT/REFILLED ---
             if (content instanceof CardsDealt) {
                 CardsDealt cd = (CardsDealt) content;
                 jade.util.leap.Iterator it = cd.getCards().iterator();
@@ -128,6 +132,7 @@ public class UserAgent extends Agent {
             }
 
         } catch (Exception e) {
+            // --- 2. HANDLE TEXT COMMANDS FROM SERVER ---
             String txt = msg.getContent();
             if (txt == null) return;
 
@@ -302,6 +307,66 @@ public class UserAgent extends Agent {
                         myGui.addServerAttackToTable(rank, "Spades");
                     }
                 }
+            }
+            // Move Confirmation (when you are defending)
+            else if (txt.contains("Correct!")) {
+                if (pendingCard != null) {
+                    myGui.removeVisualCard(pendingCard);
+                    pendingCard = null;
+                }
+                myGui.updateLog("✅ Defense accepted.");
+            }
+            // Handle Rejection
+            else if (txt.contains("Can't play") || txt.contains("Illegal move")) {
+                myGui.updateLog("❌ " + txt);
+                pendingCard = null; // Move failed, keep card in hand
+            }
+
+            else if (txt.startsWith("SERVER_BEAT:")) {
+                String[] parts = txt.split(":");
+                // Server is defending -> Gray card
+                myGui.addServerDefenseToTable(parts[1], parts[2]);
+            }
+
+
+            // Inside handleIncoming text processing
+            else if (txt.startsWith("SHOW_ATTACK:")) {
+                String[] parts = txt.split(":");
+                // When YOU attack, show your card (White)
+                myGui.addUserAttackToTable(parts[1], parts[2]);
+                // Remove it from your hand immediately
+                if (pendingCard != null) {
+                    myGui.removeVisualCard(pendingCard);
+                    pendingCard = null;
+                }
+            }
+            else if (txt.startsWith("SHOW_DEFENSE:")) {
+                String[] parts = txt.split(":");
+                myGui.addUserDefenseToTable(parts[1], parts[2]);
+            }
+            // Inside handleIncoming text processing
+            // Inside UserAgent.java -> handleIncoming text processing
+            else if (txt.startsWith("GAME_OVER:")) {
+                String result = txt.split(":")[1];
+
+                if (result.equals("YOU_WIN")) {
+                    myGui.displayEndGameMessage("You won!", Color.YELLOW);
+                    myGui.updateLog("🎉 You won the game!");
+                }
+                else if (result.equals("SERVER_WINS")) {
+                    myGui.displayEndGameMessage("You lose", Color.RED);
+                    myGui.updateLog("💀 Server won. Better luck next time!");
+                }
+                else {
+                    myGui.displayEndGameMessage("Draw", Color.WHITE);
+                    myGui.updateLog("🤝 No one wins!");
+                }
+
+                inGame = false;
+                myGui.refreshButton.setText("🔍 SCAN FOR LOBBIES");
+            }
+            else {
+                myGui.updateLog(txt);
             }
         }
     }
