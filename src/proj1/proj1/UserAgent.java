@@ -15,7 +15,11 @@ public class UserAgent extends Agent {
     private UserAgentGUI myGui;
     private SLCodec codec = new SLCodec();
     private String selectedServerName = null;
-    private boolean inGame = false;
+    private boolean inGame = false;     // Для Дурака
+    private boolean inBJGame = false;   // Для Блэкджека
+
+    // MISS-CLICK PROTECTION
+    private VisualCard pendingCard = null;
 
     // MISS-CLICK PROTECTION: Holds the card until the server confirms the move is valid
     private VisualCard pendingCard = null;
@@ -39,25 +43,70 @@ public class UserAgent extends Agent {
             }
         });
 
-        // "SCAN" becomes "TAKE CARDS" once in a game
-        myGui.refreshButton.addActionListener(e -> {
-            if (!inGame) {
-                scanServers();
-            } else {
-                sendTakeRequest();
-            }
-        });
-
+        // --- ЕДИНЫЙ СЛУШАТЕЛЬ ДЛЯ JOIN ---
         myGui.joinButton.addActionListener(e -> {
             selectedServerName = myGui.getSelectedGame();
             if (selectedServerName != null) {
-                System.out.println("🚀 Joining: " + selectedServerName);
                 myGui.clearHand();
-                SubscribeToGame sub = new SubscribeToGame();
-                sub.setGameName1(selectedServerName);
-                sendRequest(new AID(selectedServerName, AID.ISLOCALNAME), sub);
-                inGame = true;
-                myGui.refreshButton.setText("✋ TAKE CARDS");
+                myGui.clearTable();
+
+                String serverLower = selectedServerName.toLowerCase();
+                if (serverLower.contains("blackjack") || serverLower.contains("bj")) {
+                    // РЕЖИМ BLACKJACK
+                    inBJGame = true;
+                    inGame = false;
+                    myGui.refreshButton.setText("🃏 HIT");
+                    myGui.doneButton.setText("🛑 STAND");
+                    myGui.joinButton.setText("✂️ SPLIT");
+                    myGui.doneButton.setVisible(true);
+                    myGui.updateLog("Joining Blackjack...");
+
+                    ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
+                    msg.addReceiver(new AID(selectedServerName, AID.ISLOCALNAME));
+                    msg.setContent("JOIN_BJ");
+                    send(msg);
+                } else {
+                    // РЕЖИМ DURAK
+                    inBJGame = false;
+                    inGame = true;
+                    myGui.setInGameUI(true);
+                    myGui.refreshButton.setText("✋ TAKE CARDS");
+                    myGui.doneButton.setText("👌 PASS / DONE");
+                    myGui.joinButton.setText("🚪 JOIN SELECTED GAME");
+
+                    myGui.trumpLabel.setVisible(true);
+                    myGui.deckLabel.setVisible(true);
+                    myGui.turnLabel.setVisible(true);
+                    myGui.setInGameUI(true);
+
+                    SubscribeToGame sub = new SubscribeToGame();
+                    sub.setGameName1(selectedServerName);
+                    sendRequest(new AID(selectedServerName, AID.ISLOCALNAME), sub);
+                }
+            }
+        });
+
+        // --- ЕДИНЫЙ СЛУШАТЕЛЬ ДЛЯ REFRESH (SCAN / TAKE / HIT) ---
+        myGui.refreshButton.addActionListener(e -> {
+            if (inBJGame) {
+                sendBJCommand("HIT");
+            } else if (inGame) {
+                sendTakeRequest();
+            } else {
+                scanServers();
+            }
+        });
+
+        // --- ЕДИНЫЙ СЛУШАТЕЛЬ ДЛЯ DONE (PASS / STAND) ---
+        myGui.doneButton.addActionListener(e -> {
+            if (inBJGame) {
+                sendBJCommand("STAND");
+            } else if (inGame && selectedServerName != null) {
+                ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
+                msg.addReceiver(new AID(selectedServerName, AID.ISLOCALNAME));
+                msg.setContent("DONE_ROUND");
+                send(msg);
+                myGui.updateLog("👌 Sent: DONE/PASS");
             }
         });
     }
@@ -73,15 +122,12 @@ public class UserAgent extends Agent {
             if (content instanceof CardsDealt) {
                 CardsDealt cd = (CardsDealt) content;
                 jade.util.leap.Iterator it = cd.getCards().iterator();
-                int newCards = 0;
                 while (it.hasNext()) {
                     Card c = (Card) it.next();
                     if (c != null) {
                         myGui.addVisualCardToHand(c.getRank(), c.getSuit());
-                        newCards++;
                     }
                 }
-                myGui.updateLog("📥 Received " + newCards + " cards.");
                 return;
             }
 
@@ -90,38 +136,176 @@ public class UserAgent extends Agent {
             String txt = msg.getContent();
             if (txt == null) return;
 
-            // Update Deck Count
             if (txt.startsWith("DECK_COUNT:")) {
-                //int count = Integer.parseInt(txt.split(":")[1]);
-                int count = Integer.parseInt(txt.split(":")[1].trim());
-
-                myGui.setDeckUI(count);
+                myGui.setDeckUI(Integer.parseInt(txt.split(":")[1]));
             }
-            // Start of Game / Trump Info
             else if (txt.startsWith("GAME_START:")) {
                 String trumpPart = txt.split(":")[1].replace("Trump is ", "");
                 String[] parts = trumpPart.split(" ");
-                String suitName = parts[0];
-                String icon = parts.length > 1 ? parts[1] : "";
-                myGui.setTrumpUI(suitName, icon);
-                myGui.setTurnUI(false); // Defending by default
-            }
-            // Server Attacks
-            else if (txt.startsWith("ATTACK:")) {
-                String[] p = txt.split(":");
-                myGui.showAttackOnTable(p[1], p[2]);
+                myGui.setTrumpUI(parts[0], parts.length > 1 ? parts[1] : "");
                 myGui.setTurnUI(false);
+                myGui.doneButton.setEnabled(false);
             }
-            // Clear Table command (after the 2-second delay on server)
             else if (txt.equals("CLEAR_TABLE")) {
                 myGui.clearTable();
             }
-            // Turn Tracking
+            else if (txt.startsWith("SERVER_BEAT:")) {
+                String[] p = txt.split(":");
+                myGui.addServerDefenseToTable(p[1], p[2]);
+            }
+            else if (txt.startsWith("ATTACK:")) {
+                String[] p = txt.split(":");
+                myGui.addServerAttackToTable(p[1], p[2]);
+                myGui.setTurnUI(false);
+                pendingCard = null;
+                myGui.doneButton.setEnabled(false);
+                myGui.refreshButton.setEnabled(true);
+            }
+            else if (txt.startsWith("SET_TURN:")) {
+                String role = txt.split(":")[1];
+                boolean isAttacker = role.equals("ATTACK");
+                myGui.setTurnUI(isAttacker);
+                myGui.doneButton.setEnabled(isAttacker);
+                myGui.refreshButton.setEnabled(!isAttacker);
+            }
             else if (txt.contains("Your turn to attack") || txt.contains("Attack me again")) {
                 myGui.setTurnUI(true);
-                if (pendingCard != null) { // Move was successful
-                    myGui.removeVisualCard(pendingCard);
+                myGui.doneButton.setEnabled(true);
+                myGui.refreshButton.setEnabled(false);
+            }
+            else if (txt.startsWith("RETURN_CARD:")) {
+                String[] p = txt.split(":");
+                if (pendingCard != null) {
+                    myGui.addVisualCardToHand(p[1], p[2]);
                     pendingCard = null;
+                }
+            }
+            else if (txt.startsWith("SHOW_DEFENSE:") || txt.startsWith("SHOW_ATTACK:")) {
+                String[] p = txt.split(":");
+                if (txt.startsWith("SHOW_DEFENSE:")) {
+                    myGui.addUserDefenseToTable(p[1], p[2]);
+                } else {
+                    myGui.addUserAttackToTable(p[1], p[2]);
+                }
+                pendingCard = null;
+            }
+            else if (txt.equals("RESET_PENDING")) {
+                pendingCard = null;
+            }
+            else if (txt.startsWith("GAME_OVER:")) {
+                String result = txt.split(":")[1];
+                Color c = result.contains("WIN") ? Color.ORANGE : (result.contains("DRAW") || result.contains("PUSH") ? Color.WHITE : Color.RED);
+                myGui.displayEndGameMessage(result, c);
+                inGame = false;
+                inBJGame = false;
+                myGui.refreshButton.setEnabled(true);
+                myGui.refreshButton.setText("🔍 SCAN FOR LOBBIES");
+                myGui.joinButton.setText("🚪 JOIN SELECTED GAME");
+                myGui.doneButton.setVisible(false);
+            }
+//            else if (txt.startsWith("BJ_STATE:")) {
+//                // Ожидаемый формат: BJ_STATE:P=A, 10:D=K, HIDDEN:SCORES:21:10
+//                String[] parts = txt.split(":");
+//
+//                myGui.clearTable();
+//                myGui.clearHand();
+//
+//                // --- 1. АДАПТАЦИЯ ИНТЕРФЕЙСА ---
+//                // Скрываем специфику Дурака для режима Блэкджек
+//                myGui.trumpLabel.setVisible(false);
+//                myGui.deckLabel.setVisible(false);
+//
+//                // Обработка очков (Top Right Corner)
+//                if (parts.length >= 6) {
+//                    int pScore = Integer.parseInt(parts[4]);
+//                    String dScore = parts[5];
+//                    myGui.turnLabel.setText("Dealer: " + dScore + " | You: " + pScore);
+//
+//                    // Если перебор (Bust) — подсвечиваем счет красным
+//                    if (pScore > 21) {
+//                        myGui.turnLabel.setForeground(Color.RED);
+//                    } else {
+//                        myGui.turnLabel.setForeground(Color.CYAN);
+//                    }
+//                }
+//
+//                // --- 2. КАРТЫ ИГРОКА И ЛОГИКА SPLIT (Нижнее поле) ---
+//                String playerPart = parts[1].replace("P=", "");
+//                String[] pCards = playerPart.split(",");
+//
+//                // Split доступен только если карт 2 и они одинакового ранга
+//                boolean canSplit = (pCards.length == 2 && pCards[0].trim().equals(pCards[1].trim()));
+//                myGui.joinButton.setEnabled(canSplit);
+//
+//                for (String pRank : pCards) {
+//                    String rank = pRank.trim();
+//                    if (!rank.isEmpty()) {
+//                        // Отрисовка в visualHandPanel (внизу)
+//                        myGui.addVisualCardToHand(rank, "Hearts");
+//                    }
+//                }
+//
+//                // --- 3. КАРТЫ ДИЛЕРА (Верхнее поле / Стол) ---
+//                String dealerPart = parts[2].replace("D=", "");
+//                String[] dCards = dealerPart.split(",");
+//                for (String dRank : dCards) {
+//                    String rank = dRank.trim();
+//                    if (rank.equalsIgnoreCase("HIDDEN")) {
+//                        // Рисуем закрытую карту (рубашку)
+//                        myGui.addServerAttackToTable("?", "BACK");
+//                    } else if (!rank.isEmpty()) {
+//                        // Рисуем открытую карту дилера
+//                        myGui.addServerAttackToTable(rank, "Spades");
+//                    }
+//                }
+//
+//                myGui.updateLog("BJ Update: You=" + playerPart + (canSplit ? " [SPLIT AVAILABLE]" : ""));
+//            }
+            else if (txt.startsWith("BJ_STATE:")) {
+                String[] parts = txt.split(":");
+                myGui.clearTable();
+                myGui.clearHand();
+
+                // 1. UI ADAPTATION
+                myGui.trumpLabel.setVisible(false);
+                myGui.deckLabel.setVisible(false);
+                myGui.turnLabel.setVisible(true); // Only show the turnLabel for scores
+
+                if (parts.length >= 6) {
+                    String pScoreStr = parts[4]; // Could be "21" or "BJ"
+                    String dScore = parts[5];
+
+                    myGui.turnLabel.setText("Dealer: " + dScore + " | You: " + pScoreStr);
+
+                    if (pScoreStr.equals("BJ")) {
+                        myGui.turnLabel.setForeground(Color.MAGENTA); // Special color for Blackjack
+                    } else if (!pScoreStr.equals("BJ") && Integer.parseInt(pScoreStr) > 21) {
+                        myGui.turnLabel.setForeground(Color.RED);
+                    } else {
+                        myGui.turnLabel.setForeground(Color.CYAN);
+                    }
+                }
+
+                // 2. PLAYER CARDS & SPLIT
+                String playerPart = parts[1].replace("P=", "");
+                String[] pCards = playerPart.split(",");
+                boolean canSplit = (pCards.length == 2 && pCards[0].trim().equals(pCards[1].trim()));
+                myGui.joinButton.setEnabled(canSplit);
+
+                for (String pRank : pCards) {
+                    if (!pRank.trim().isEmpty()) myGui.addVisualCardToHand(pRank.trim(), "Hearts");
+                }
+
+                // 3. DEALER CARDS
+                String dealerPart = parts[2].replace("D=", "");
+                String[] dCards = dealerPart.split(",");
+                for (String dRank : dCards) {
+                    String rank = dRank.trim();
+                    if (rank.equalsIgnoreCase("HIDDEN")) {
+                        myGui.addServerAttackToTable("?", "BACK");
+                    } else if (!rank.isEmpty()) {
+                        myGui.addServerAttackToTable(rank, "Spades");
+                    }
                 }
             }
             // Move Confirmation (when you are defending)
@@ -187,12 +371,11 @@ public class UserAgent extends Agent {
         }
     }
 
-    /**
-     * Called by VisualCard when clicked
-     */
     public void playVisualCard(VisualCard visualCardComponent) {
-        if (inGame && selectedServerName != null) {
+        if (inBJGame) return;
+        if (inGame && selectedServerName != null && pendingCard == null && visualCardComponent.getParent() == myGui.visualHandPanel) {
             pendingCard = visualCardComponent;
+            myGui.removeVisualCard(visualCardComponent);
 
             PlayMove m = new PlayMove();
             Card c = new Card();
@@ -200,7 +383,6 @@ public class UserAgent extends Agent {
             c.setSuit(visualCardComponent.getSuit());
             m.setPlayedCard(c);
 
-            System.out.println("[USER] Attempting to play: " + c.getRank() + " of " + c.getSuit());
             sendRequest(new AID(selectedServerName, AID.ISLOCALNAME), m);
         }
     }
@@ -216,7 +398,16 @@ public class UserAgent extends Agent {
                 SwingUtilities.invokeLater(() -> {
                     myGui.gameListModel.clear();
                     for (DFAgentDescription dfd : results) {
-                        myGui.addGame(dfd.getName().getLocalName());
+                        String name = dfd.getName().getLocalName();
+                        String nameLower = name.toLowerCase();
+
+                        // ОБНОВЛЕННЫЙ ФИЛЬТР: разрешаем и Дурака, и Блэкджек
+                        if (nameLower.contains("durak") ||
+                                nameLower.contains("blackjack") ||
+                                nameLower.contains("bj")) {
+
+                            myGui.addGame(name);
+                        }
                     }
                 });
             } catch (Exception ex) { ex.printStackTrace(); }
@@ -236,11 +427,26 @@ public class UserAgent extends Agent {
 
     private void sendTakeRequest() {
         if (selectedServerName != null) {
-            ACLMessage m = new ACLMessage(ACLMessage.REQUEST);
+            if (pendingCard != null) {
+                myGui.addVisualCardToHand(pendingCard.getRank(), pendingCard.getSuit());
+                pendingCard = null;
+            }
+            ACLMessage m = new ACLMessage(ACLMessage.INFORM);
             m.addReceiver(new AID(selectedServerName, AID.ISLOCALNAME));
             m.setContent("TAKE_CARDS");
             send(m);
-            myGui.updateLog("🏳️ Taking table cards...");
+            myGui.updateLog("🏳️ Requesting to take cards...");
+            myGui.refreshButton.setEnabled(false);
+        }
+    }
+
+    private void sendBJCommand(String command) {
+        if (selectedServerName != null) {
+            ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
+            msg.addReceiver(new AID(selectedServerName, AID.ISLOCALNAME));
+            msg.setContent(command);
+            send(msg);
+            myGui.updateLog("BJ Action: " + command);
         }
     }
 }
