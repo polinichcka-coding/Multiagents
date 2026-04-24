@@ -39,18 +39,10 @@ public class UserAgent extends Agent {
             }
         });
 
-        // "SCAN" becomes "TAKE CARDS" once in a game
-        myGui.refreshButton.addActionListener(e -> {
-            if (!inGame) {
-                scanServers();
-            } else {
-                sendTakeRequest();
-            }
-        });
-
         myGui.joinButton.addActionListener(e -> {
             selectedServerName = myGui.getSelectedGame();
             if (selectedServerName != null) {
+                myGui.prepareGameUI(selectedServerName);
                 System.out.println("🚀 Joining: " + selectedServerName);
                 myGui.clearHand();
                 SubscribeToGame sub = new SubscribeToGame();
@@ -58,6 +50,24 @@ public class UserAgent extends Agent {
                 sendRequest(new AID(selectedServerName, AID.ISLOCALNAME), sub);
                 inGame = true;
                 myGui.refreshButton.setText("✋ TAKE CARDS");
+            }
+        });
+
+        myGui.doneButton.addActionListener(e -> {
+            if (inGame && selectedServerName != null) {
+                ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
+                msg.addReceiver(new AID(selectedServerName, AID.ISLOCALNAME));
+                msg.setContent("DONE_ROUND"); // Отправляем сигнал "Бито"
+                send(msg);
+                myGui.updateLog("👌 Отправлено: БИТО");
+            }
+        });
+        myGui.refreshButton.addActionListener(e -> {
+            System.out.println("[BUTTON CLICK] inGame: " + inGame);
+            if (!inGame) {
+                scanServers();
+            } else {
+                sendTakeRequest();
             }
         });
     }
@@ -69,114 +79,93 @@ public class UserAgent extends Agent {
             Object content = getContentManager().extractContent(msg);
             if (content instanceof Action) content = ((Action) content).getAction();
 
-            // --- 1. HANDLE CARDS BEING DEALT/REFILLED ---
             if (content instanceof CardsDealt) {
                 CardsDealt cd = (CardsDealt) content;
                 jade.util.leap.Iterator it = cd.getCards().iterator();
-                int newCards = 0;
                 while (it.hasNext()) {
                     Card c = (Card) it.next();
                     if (c != null) {
                         myGui.addVisualCardToHand(c.getRank(), c.getSuit());
-                        newCards++;
                     }
                 }
-                myGui.updateLog("📥 Received " + newCards + " cards.");
                 return;
             }
 
         } catch (Exception e) {
-            // --- 2. HANDLE TEXT COMMANDS FROM SERVER ---
             String txt = msg.getContent();
             if (txt == null) return;
 
-            // Update Deck Count
+            // --- Обработка текстовых команд ---
+
             if (txt.startsWith("DECK_COUNT:")) {
-                int count = Integer.parseInt(txt.split(":")[1]);
-                myGui.setDeckUI(count);
+                myGui.setDeckUI(Integer.parseInt(txt.split(":")[1]));
             }
-            // Start of Game / Trump Info
             else if (txt.startsWith("GAME_START:")) {
                 String trumpPart = txt.split(":")[1].replace("Trump is ", "");
                 String[] parts = trumpPart.split(" ");
-                String suitName = parts[0];
-                String icon = parts.length > 1 ? parts[1] : "";
-                myGui.setTrumpUI(suitName, icon);
-                myGui.setTurnUI(false); // Defending by default
-            }
-            // Server Attacks
-            else if (txt.startsWith("ATTACK:")) {
-                String[] p = txt.split(":");
-                myGui.showAttackOnTable(p[1], p[2]);
+                myGui.setTrumpUI(parts[0], parts.length > 1 ? parts[1] : "");
                 myGui.setTurnUI(false);
+                myGui.doneButton.setEnabled(false); // В начале игры ты защищаешься (от бота)
             }
-            // Clear Table command (after the 2-second delay on server)
             else if (txt.equals("CLEAR_TABLE")) {
                 myGui.clearTable();
             }
-            // Turn Tracking
+            else if (txt.startsWith("SERVER_BEAT:")) {
+                String[] p = txt.split(":");
+                myGui.addServerDefenseToTable(p[1], p[2]);
+            }
+            else if (txt.startsWith("ATTACK:")) {
+                // ФИКС ОШИБКИ: обязательно создаем массив p
+                String[] p = txt.split(":");
+                myGui.addServerAttackToTable(p[1], p[2]);
+
+                myGui.setTurnUI(false);
+                pendingCard = null; // Разблокируем UI для отбития
+
+                // Кнопки по правилам
+                myGui.doneButton.setEnabled(false);
+                myGui.refreshButton.setEnabled(true); // Можно нажать TAKE
+            }
+            else if (txt.startsWith("SET_TURN:")) {
+                String role = txt.split(":")[1];
+                boolean isAttacker = role.equals("ATTACK");
+                myGui.setTurnUI(isAttacker);
+
+                // Синхронизируем кнопки
+                myGui.doneButton.setEnabled(isAttacker);
+                myGui.refreshButton.setEnabled(!isAttacker);
+            }
             else if (txt.contains("Your turn to attack") || txt.contains("Attack me again")) {
                 myGui.setTurnUI(true);
-                if (pendingCard != null) { // Move was successful
-                    myGui.removeVisualCard(pendingCard);
-                    pendingCard = null;
-                }
+                myGui.doneButton.setEnabled(true);
+                myGui.refreshButton.setEnabled(false); // Нельзя взять, когда ты атакуешь
             }
-            // Move Confirmation (when you are defending)
-            else if (txt.contains("Correct!")) {
+            else if (txt.startsWith("RETURN_CARD:")) {
+                String[] p = txt.split(":");
                 if (pendingCard != null) {
-                    myGui.removeVisualCard(pendingCard);
-                    pendingCard = null;
-                }
-                myGui.updateLog("✅ Defense accepted.");
-            }
-            // Handle Rejection
-            else if (txt.contains("Can't play") || txt.contains("Illegal move")) {
-                myGui.updateLog("❌ " + txt);
-                pendingCard = null; // Move failed, keep card in hand
-            }
-
-            else if (txt.startsWith("SERVER_BEAT:")) {
-                String[] parts = txt.split(":");
-                // Server is defending -> Gray card
-                myGui.addServerDefenseToTable(parts[1], parts[2]);
-            }
-
-
-            // Inside handleIncoming text processing
-            else if (txt.startsWith("SHOW_ATTACK:")) {
-                String[] parts = txt.split(":");
-                // When YOU attack, show your card (White)
-                myGui.addUserAttackToTable(parts[1], parts[2]);
-                // Remove it from your hand immediately
-                if (pendingCard != null) {
-                    myGui.removeVisualCard(pendingCard);
+                    myGui.addVisualCardToHand(p[1], p[2]);
                     pendingCard = null;
                 }
             }
-            else if (txt.startsWith("SHOW_DEFENSE:")) {
-                String[] parts = txt.split(":");
-                myGui.addUserDefenseToTable(parts[1], parts[2]);
+            else if (txt.startsWith("SHOW_DEFENSE:") || txt.startsWith("SHOW_ATTACK:")) {
+                String[] p = txt.split(":");
+                if (txt.startsWith("SHOW_DEFENSE:")) {
+                    myGui.addUserDefenseToTable(p[1], p[2]);
+                } else {
+                    myGui.addUserAttackToTable(p[1], p[2]);
+                }
+                pendingCard = null;
             }
-            // Inside handleIncoming text processing
-            // Inside UserAgent.java -> handleIncoming text processing
+            else if (txt.equals("RESET_PENDING")) {
+                pendingCard = null;
+            }
             else if (txt.startsWith("GAME_OVER:")) {
+                // ... твой код завершения игры ...
                 String result = txt.split(":")[1];
-
-                if (result.equals("YOU_WIN")) {
-                    myGui.displayEndGameMessage("You won!", Color.YELLOW);
-                    myGui.updateLog("🎉 You won the game!");
-                }
-                else if (result.equals("SERVER_WINS")) {
-                    myGui.displayEndGameMessage("You lose", Color.RED);
-                    myGui.updateLog("💀 Server won. Better luck next time!");
-                }
-                else {
-                    myGui.displayEndGameMessage("Draw", Color.WHITE);
-                    myGui.updateLog("🤝 No one wins!");
-                }
-
+                Color c = result.equals("YOU_WIN") ? Color.YELLOW : (result.equals("DRAW") ? Color.WHITE : Color.RED);
+                myGui.displayEndGameMessage(result, c);
                 inGame = false;
+                myGui.refreshButton.setEnabled(true);
                 myGui.refreshButton.setText("🔍 SCAN FOR LOBBIES");
             }
             else {
@@ -185,12 +174,11 @@ public class UserAgent extends Agent {
         }
     }
 
-    /**
-     * Called by VisualCard when clicked
-     */
     public void playVisualCard(VisualCard visualCardComponent) {
-        if (inGame && selectedServerName != null) {
+        // Prevent clicking another card while one is waiting for server response
+        if (inGame && selectedServerName != null && pendingCard == null && visualCardComponent.getParent() == myGui.visualHandPanel) {
             pendingCard = visualCardComponent;
+            myGui.removeVisualCard(visualCardComponent);
 
             PlayMove m = new PlayMove();
             Card c = new Card();
@@ -198,7 +186,6 @@ public class UserAgent extends Agent {
             c.setSuit(visualCardComponent.getSuit());
             m.setPlayedCard(c);
 
-            System.out.println("[USER] Attempting to play: " + c.getRank() + " of " + c.getSuit());
             sendRequest(new AID(selectedServerName, AID.ISLOCALNAME), m);
         }
     }
@@ -234,11 +221,20 @@ public class UserAgent extends Agent {
 
     private void sendTakeRequest() {
         if (selectedServerName != null) {
-            ACLMessage m = new ACLMessage(ACLMessage.REQUEST);
+            // FORCE UNLOCK: If a card was stuck in "pending", put it back or clear it
+            if (pendingCard != null) {
+                myGui.addVisualCardToHand(pendingCard.getRank(), pendingCard.getSuit());
+                pendingCard = null;
+            }
+
+            ACLMessage m = new ACLMessage(ACLMessage.INFORM);
             m.addReceiver(new AID(selectedServerName, AID.ISLOCALNAME));
             m.setContent("TAKE_CARDS");
+            // Do NOT set ontology/language for this plain text message
             send(m);
-            myGui.updateLog("🏳️ Taking table cards...");
+
+            myGui.updateLog("🏳️ Requesting to take cards...");
+            myGui.refreshButton.setEnabled(false);
         }
     }
 }

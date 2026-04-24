@@ -24,6 +24,7 @@ public class UserAgentGUI extends JFrame {
     // NEW: Extra status labels for your "Turn" and "Deck" info
     public JLabel deckLabel = new JLabel("Deck: 36");
     public JLabel turnLabel = new JLabel("TURN: Wait...");
+    public JButton doneButton = new JButton("Pass"); // Новая кнопка
 
     public UserAgentGUI(UserAgent agent) {
         this.myAgent = agent;
@@ -104,6 +105,11 @@ public class UserAgentGUI extends JFrame {
         add(leftPanel, BorderLayout.WEST);
         add(mainContent, BorderLayout.CENTER);
         add(buttonPanel, BorderLayout.SOUTH);
+
+        buttonPanel.setPreferredSize(new Dimension(0, 60));
+        buttonPanel.add(refreshButton);
+        buttonPanel.add(joinButton);
+        buttonPanel.add(doneButton); // Добавляем в GUI
 
         setLocationRelativeTo(null);
     }
@@ -237,11 +243,33 @@ public class UserAgentGUI extends JFrame {
         });
     }
 
-    // When you start an attack (White card, clear table first)
+    public void prepareGameUI(String gameName) {
+        SwingUtilities.invokeLater(() -> {
+            boolean isDurak = gameName.toUpperCase().contains("DURAK");
+            doneButton.setVisible(isDurak); // Only visible for Durak
+            revalidate();
+            repaint();
+        });
+    }
+
+    public void addServerAttackToTable(String rank, String suit) {
+        SwingUtilities.invokeLater(() -> {
+            // Do NOT call removeAll() here so cards accumulate
+            VisualCard atkCard = new VisualCard(rank, suit, null);
+            atkCard.setBackground(Color.LIGHT_GRAY);
+            battlefieldPanel.add(atkCard);
+            battlefieldPanel.revalidate();
+            battlefieldPanel.repaint();
+        });
+    }
+
     public void addUserAttackToTable(String rank, String suit) {
         SwingUtilities.invokeLater(() -> {
-            battlefieldPanel.removeAll(); // Clear previous bout
-            VisualCard card = new VisualCard(rank, suit, myAgent); // White
+
+            VisualCard card = new VisualCard(rank, suit, myAgent);
+            for (java.awt.event.MouseListener ml : card.getMouseListeners()) {
+                card.removeMouseListener(ml);
+            }
             battlefieldPanel.add(card);
             battlefieldPanel.revalidate();
             battlefieldPanel.repaint();
@@ -272,5 +300,4 @@ public class UserAgentGUI extends JFrame {
             battlefieldPanel.repaint();
         });
     }
-
 }
