@@ -1,0 +1,6 @@
+{
+  "gameName": "Blackjack VIP Table",
+  "minPlayers": 2,
+  "decksCount": 6,
+  "description": "High stakes table for professional agents."
+}

@@ -25,7 +25,6 @@
         <SOURCES />
       </library>
     </orderEntry>
-    <orderEntry type="library" name="commons-codec-1.3" level="project" />
     <orderEntry type="library" name="jade" level="project" />
   </component>
 </module>

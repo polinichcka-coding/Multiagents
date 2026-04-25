@@ -22,11 +22,14 @@ public class DurakProviderAgent extends Agent {
     private boolean playerWasDefending = false;
 
     protected void setup() {
+        // Register language and ontology for JADE communication
         getContentManager().registerLanguage(codec);
         getContentManager().registerOntology(CardGameOntology.getInstance());
         initDeck();
         registerInDF();
 
+        System.out.println("DURAK Provider started: " + getLocalName());
+        // Main agent behavior loop
         addBehaviour(new CyclicBehaviour() {
             public void action() {
                 ACLMessage msg = receive();
@@ -40,28 +43,27 @@ public class DurakProviderAgent extends Agent {
         String rawContent = msg.getContent();
         if (rawContent == null) return;
 
+        // Handle simple text-based commands
         if (rawContent.equals("TAKE_CARDS")) {
-            System.out.println("[SERVER] TAKE_CARDS received from " + msg.getSender().getLocalName());
             handleTake(msg.getSender());
             return;
         }
 
         if (rawContent.equals("DONE_ROUND")) {
-            // Если игрок защищается, он НЕ может нажать БИТО
+            // Defending player cannot end the round manually
             if (playerWasDefending) {
-                sendText(msg.getSender(), "❌ You are defending! Use TAKE instead.");
+                sendText(msg.getSender(), "You are defending! Use TAKE instead.");
                 return;
             }
-            // Если на столе пусто, нельзя нажать БИТО
             if (cardsOnTable.isEmpty()) {
-                sendText(msg.getSender(), "❌ Table is empty!");
+                sendText(msg.getSender(), "Table is empty!");
                 return;
             }
             handleRoundEnd(msg.getSender());
             return;
         }
 
-        // --- STEP 2: ONTOLOGY ACTIONS ---
+        // Handle ontology-defined game actions
         try {
             Object content = getContentManager().extractContent(msg);
             if (content instanceof Action) {
@@ -74,15 +76,18 @@ public class DurakProviderAgent extends Agent {
                 }
             }
         } catch (Exception e) {
-            // Silently ignore ontology errors for non-ontology messages
+            // Ignore parsing errors
         }
     }
 
     private void handleStart(AID player) throws Exception {
+        // Initialize deck and hands for a new game
         initDeck();
         serverHand.clear();
         playerCardCount = 0;
         CardsDealt cd = new CardsDealt();
+
+        // Initial deal to player
         for (int i = 0; i < 6; i++) {
             Card c = drawCard();
             if (c != null) {
@@ -90,10 +95,13 @@ public class DurakProviderAgent extends Agent {
                 playerCardCount++;
             }
         }
+        // Initial deal to server
         for (int i = 0; i < 6; i++) {
             Card c = drawCard();
             if (c != null) serverHand.add(c);
         }
+
+        // Send dealt cards to player agent
         ACLMessage reply = new ACLMessage(ACLMessage.INFORM);
         reply.addReceiver(player);
         reply.setLanguage(codec.getName());
@@ -107,59 +115,51 @@ public class DurakProviderAgent extends Agent {
     }
 
     private void handleMove(Card pCard, AID player) {
-        // SCENARIO 1: PLAYER IS DEFENDING (tableCard is not null)
+        // Player is defending against an existing card
         if (tableCard != null) {
             if (canBeat(tableCard, pCard)) {
                 playerWasDefending = true;
                 playerCardCount--;
                 cardsOnTable.add(pCard);
                 sendText(player, "SHOW_DEFENSE:" + pCard.getRank() + ":" + pCard.getSuit());
-                tableCard = null; // Card is beaten, spot is free for bot to throw more
+                tableCard = null;
 
-                // Trigger bot's turn to try and add cards (Add-on)
                 handleBotAddOn(player);
             } else {
-                // Defense failed
-                // sendText(player, "❌ Your card is too weak or wrong suit!"); // Remove or comment this
                 sendText(player, "RETURN_CARD:" + pCard.getRank() + ":" + pCard.getSuit());
             }
         }
-        // SCENARIO 2: PLAYER IS ATTACKING / ADDING ON (tableCard is null)
+        // Player is initiating an attack or adding cards
         else {
-            // If there are already cards on the table, this is an ADD-ON (Throwing in)
             if (!cardsOnTable.isEmpty()) {
                 if (canAddOn(pCard)) {
-                    playerWasDefending = false;
-                    tableCard = pCard;
-                    cardsOnTable.add(pCard);
-                    playerCardCount--;
-                    sendText(player, "SHOW_ATTACK:" + pCard.getRank() + ":" + pCard.getSuit());
-
-                    new Thread(() -> {
-                        try { Thread.sleep(1000); handleServerDefense(player); } catch (Exception e) {}
-                    }).start();
+                    processAttack(pCard, player);
                 } else {
-                    // Add-on failed
-                    // sendText(player, "❌ Illegal move! Rank must match cards on table."); // Remove or comment this
                     sendText(player, "RETURN_CARD:" + pCard.getRank() + ":" + pCard.getSuit());
                 }
-            }
-            // Fresh attack (First card of the round)
-            else {
-                playerWasDefending = false;
-                tableCard = pCard;
-                cardsOnTable.add(pCard);
-                playerCardCount--;
-                sendText(player, "SHOW_ATTACK:" + pCard.getRank() + ":" + pCard.getSuit());
-
-                new Thread(() -> {
-                    try { Thread.sleep(1000); handleServerDefense(player); } catch (Exception e) {}
-                }).start();
+            } else {
+                processAttack(pCard, player);
             }
         }
     }
 
+    private void processAttack(Card pCard, AID player) {
+        playerWasDefending = false;
+        tableCard = pCard;
+        cardsOnTable.add(pCard);
+        playerCardCount--;
+
+        sendText(player, "SHOW_ATTACK:" + pCard.getRank() + ":" + pCard.getSuit());
+
+        addBehaviour(new WakerBehaviour(this, 1000) {
+            protected void handleElapsedTimeout() {
+                handleServerDefense(player);
+            }
+        });
+    }
+
     private boolean canAddOn(Card pCard) {
+        // Checks if the rank matches any card currently on the table
         for (Card c : cardsOnTable) {
             if (c.getRank().equals(pCard.getRank())) return true;
         }
@@ -167,42 +167,35 @@ public class DurakProviderAgent extends Agent {
     }
 
     private void handleBotAddOn(AID player) {
+        // Bot logic to throw extra cards if possible
         new Thread(() -> {
             try {
                 Thread.sleep(1500);
                 Card toThrow = null;
                 if (playerCardCount > 0) {
                     for (Card botCard : serverHand) {
-                        for (Card onTable : cardsOnTable) {
-                            if (botCard.getRank().equals(onTable.getRank())) {
-                                toThrow = botCard;
-                                break;
-                            }
+                        if (canAddOn(botCard)) {
+                            toThrow = botCard;
+                            break;
                         }
-                        if (toThrow != null) break;
                     }
                 }
 
                 if (toThrow != null) {
-                    // Бот подкидывает карту
                     serverHand.remove(toThrow);
                     tableCard = toThrow;
                     cardsOnTable.add(toThrow);
                     sendAttack(player, toThrow);
-
-                    System.out.println("[BOT] Adding card: " + toThrow.getRank());
                 } else {
                     Thread.sleep(1000);
-                    System.out.println("[BOT] No more cards to add. Round ends.");
                     handleRoundEnd(player);
                 }
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
+            } catch (Exception e) { e.printStackTrace(); }
         }).start();
     }
 
     private void handleServerDefense(AID player) {
+        // Bot searches for the best card to defend with
         Card bestDefense = null;
         for (Card c : serverHand) {
             if (canBeat(tableCard, c)) {
@@ -212,59 +205,46 @@ public class DurakProviderAgent extends Agent {
         }
 
         if (bestDefense != null) {
-            // Бот отбился
             serverHand.remove(bestDefense);
             cardsOnTable.add(bestDefense);
             sendText(player, "SERVER_BEAT:" + bestDefense.getRank() + ":" + bestDefense.getSuit());
-
-            tableCard = null; // Поле свободно для твоего следующего подкидывания
-            sendText(player, "✅ Я отбился. Будешь подкидывать? Или жми БИТО.");
+            tableCard = null;
         } else {
-            // Бот НЕ смог отбиться
             handleBotTakes(player);
         }
     }
-    private void handleBotTakes(AID player) {
-        sendText(player, "🏳️ I can't beat that. I'm taking the cards.");
 
+    private void handleBotTakes(AID player) {
+        // Bot fails to defend and picks up all table cards
+        sendText(player, "I can't beat that. I'm taking the cards.");
         new Thread(() -> {
             try {
                 Thread.sleep(1500);
                 serverHand.addAll(cardsOnTable);
                 cardsOnTable.clear();
                 tableCard = null;
-
                 sendText(player, "CLEAR_TABLE");
                 refillHands(player);
-
-                // КРИТИЧНО: Бот взял, значит ОН защищался и проиграл раунд.
-                // Значит, ТЫ атакуешь снова.
                 playerWasDefending = false;
-                sendText(player, "Attack me again! Your turn.");
-                // Обязательно даем игроку право ходить
                 sendText(player, "SET_TURN:ATTACK");
-
             } catch (Exception e) { e.printStackTrace(); }
         }).start();
     }
 
     private void handleRoundEnd(AID player) {
+        // Round cleanup and turn switching
         new Thread(() -> {
             try {
                 sendText(player, "CLEAR_TABLE");
-                cardsOnTable.clear(); // Карты уходят в "отбой", никто их не забирает
+                cardsOnTable.clear();
                 tableCard = null;
                 refillHands(player);
 
                 if (playerWasDefending) {
-                    // Если ты защищался и нажал БИТО (значит отбился) -> теперь ты атакуешь
-                    sendText(player, "Your turn to attack!");
                     sendText(player, "SET_TURN:ATTACK");
                     playerWasDefending = false;
                 } else {
-                    // Если ты атаковал и нажал БИТО (значит закончил подкидывать) -> теперь бот атакует
                     playerWasDefending = true;
-                    sendText(player, "Round finished. My turn!");
                     makeServerMove(player);
                 }
             } catch (Exception e) { e.printStackTrace(); }
@@ -272,13 +252,13 @@ public class DurakProviderAgent extends Agent {
     }
 
     private void refillHands(AID player) throws Exception {
+        // Draws cards until player and server have 6 cards or deck is empty
         if (deck.isEmpty()) {
-            sendText(player, "DECK_COUNT:0"); // Make sure GUI shows 0
+            sendText(player, "DECK_COUNT:0");
             checkGameOver(player);
             return;
         }
 
-        // Refill Player
         CardsDealt extra = new CardsDealt();
         boolean needToSend = false;
         while (playerCardCount < 6 && !deck.isEmpty()) {
@@ -289,6 +269,7 @@ public class DurakProviderAgent extends Agent {
                 needToSend = true;
             }
         }
+
         if (needToSend) {
             ACLMessage m = new ACLMessage(ACLMessage.INFORM);
             m.addReceiver(player);
@@ -298,19 +279,16 @@ public class DurakProviderAgent extends Agent {
             send(m);
         }
 
-        // Refill Server
         while (serverHand.size() < 6 && !deck.isEmpty()) {
             serverHand.add(drawCard());
         }
 
-        // --- CRITICAL FIX: Send updated count to GUI ---
         sendText(player, "DECK_COUNT:" + deck.size());
-
         checkGameOver(player);
     }
 
-    // Helper to keep refillHands clean
     private void checkGameOver(AID player) {
+        // Game over conditions for Durak
         if (deck.isEmpty() && (playerCardCount == 0 || serverHand.isEmpty())) {
             new Thread(() -> {
                 try {
@@ -324,29 +302,19 @@ public class DurakProviderAgent extends Agent {
     }
 
     private void handleTake(AID player) {
-        // Если список пуст — брать нечего
-        if (cardsOnTable.isEmpty()) {
-            sendText(player, "❌ Table is empty.");
-            return;
-        }
-        System.out.println("\n[BOT DEBUG] Deck Remaining: " + deck.size());
-        // -------------------
+        // Logic for when the player picks up the cards
+        if (cardsOnTable.isEmpty()) return;
 
         try {
             CardsDealt cd = new CardsDealt();
-
-            // Переносим ВСЕ карты из списка в сообщение для игрока
             for (Card c : cardsOnTable) {
                 cd.addCards(c);
-                playerCardCount++; // Увеличиваем счетчик в руке игрока
+                playerCardCount++;
             }
-
-            // ОЧИЩАЕМ ВСЁ
             cardsOnTable.clear();
             tableCard = null;
             playerWasDefending = true;
 
-            // Отправляем игроку
             ACLMessage m = new ACLMessage(ACLMessage.INFORM);
             m.addReceiver(player);
             m.setLanguage(codec.getName());
@@ -356,33 +324,28 @@ public class DurakProviderAgent extends Agent {
 
             sendText(player, "CLEAR_TABLE");
 
-            // 6. Запускаем следующий ход бота с задержкой
             new Thread(() -> {
                 try {
                     Thread.sleep(2000);
                     refillHands(player);
-                    sendText(player, "DECK_COUNT:" + deck.size());
-                    makeServerMove(player); // Бот ходит под тебя снова
+                    makeServerMove(player);
                 } catch (Exception e) { e.printStackTrace(); }
             }).start();
 
-            System.out.println("[SERVER] Take successful. Player card count now: " + playerCardCount);
-
-        } catch (Exception e) {
-            System.err.println("[ERROR] handleTake failed: " + e.getMessage());
-            e.printStackTrace();
-        }
+        } catch (Exception e) { e.printStackTrace(); }
     }
 
     private void makeServerMove(AID player) {
+        // Bot logic for making the first move of a round
         if (!serverHand.isEmpty()) {
             tableCard = serverHand.remove(0);
-            cardsOnTable.add(tableCard); // ДОБАВЬ ЭТУ СТРОЧКУ, если её нет!
+            cardsOnTable.add(tableCard);
             sendAttack(player, tableCard);
         }
     }
 
     private boolean canBeat(Card attack, Card defense) {
+        // Core Durak mechanics for card comparison
         if (attack.getSuit().equals(defense.getSuit())) {
             return getWeight(defense.getRank()) > getWeight(attack.getRank());
         }
@@ -404,6 +367,7 @@ public class DurakProviderAgent extends Agent {
     }
 
     private void initDeck() {
+        // Setup 36-card deck and random trump suit
         deck.clear();
         String[] suits = {"Hearts", "Diamonds", "Clubs", "Spades"};
         String[] ranks = {"6", "7", "8", "9", "10", "J", "Q", "K", "A"};
@@ -421,49 +385,45 @@ public class DurakProviderAgent extends Agent {
     private Card drawCard() { return deck.isEmpty() ? null : deck.remove(0); }
 
     private int getWeight(String r) {
+        // Numerical weights for face cards and ranks
         switch (r) {
-            case "J":
-                return 11;
-            case "Q":
-                return 12;
-            case "K":
-                return 13;
-            case "A":
-                return 14;
-            case "10":
-                return 10;
+            case "J": return 11;
+            case "Q": return 12;
+            case "K": return 13;
+            case "A": return 14;
+            case "10": return 10;
             default:
-                try {
-                    return Integer.parseInt(r);
-                } catch (Exception e) {
-                    return 0;
-                }
+                try { return Integer.parseInt(r); } catch (Exception e) { return 0; }
         }
     }
 
     private String getTrumpIcon(String suit) {
+        // Visual representation for suits
         switch (suit) {
-            case "Hearts":
-                return "♥";
-            case "Diamonds":
-                return "♦";
-            case "Clubs":
-                return "♣";
-            case "Spades":
-                return "♠";
-            default:
-                return "";
+            case "Hearts": return "♥";
+            case "Diamonds": return "♦";
+            case "Clubs": return "♣";
+            case "Spades": return "♠";
+            default: return "";
         }
     }
 
     private void registerInDF() {
-        DFAgentDescription dfd = new DFAgentDescription();
-        dfd.setName(getAID());
-        ServiceDescription sd = new ServiceDescription();
-        sd.setType("card-game-provider");
-        sd.setName("DURAK-SERVER");
-        dfd.addServices(sd);
-        try { DFService.register(this, dfd); }
-        catch (Exception e) { e.printStackTrace(); }
+        try {
+            DFAgentDescription dfd = new DFAgentDescription();
+            dfd.setName(getAID());
+
+            ServiceDescription sd = new ServiceDescription();
+            sd.setType("durak-game-provider");
+            sd.setName("DURAK-SERVER");
+
+            dfd.addServices(sd);
+            DFService.register(this, dfd);
+
+            System.out.println("DURAK registered in DF");
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 }

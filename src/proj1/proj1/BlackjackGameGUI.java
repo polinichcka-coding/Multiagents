@@ -5,6 +5,7 @@ import javax.swing.border.EmptyBorder;
 import javax.swing.border.TitledBorder;
 import java.awt.*;
 
+//Manages the visual representation of the game, including cards, scoring, and controls.
 public class BlackjackGameGUI extends JFrame {
     public JPanel playerHandPanel = new JPanel();
     public JPanel dealerHandPanel = new JPanel();
@@ -101,6 +102,7 @@ public class BlackjackGameGUI extends JFrame {
         );
     }
 
+    //Clears all card components from the UI
     public void clearCards() {
         SwingUtilities.invokeLater(() -> {
             playerHandPanel.removeAll();
@@ -111,7 +113,7 @@ public class BlackjackGameGUI extends JFrame {
             dealerHandPanel.repaint();
         });
     }
-
+    //Adds a visual card to the player's panel
     public void addPlayerCard(String rank, String suit) {
         SwingUtilities.invokeLater(() -> {
             playerHandPanel.add(new VisualCard(rank, suit, null));
@@ -119,7 +121,7 @@ public class BlackjackGameGUI extends JFrame {
             playerHandPanel.repaint();
         });
     }
-
+    //Adds a visual card to the dealer's panel
     public void addDealerCard(String rank, String suit) {
         SwingUtilities.invokeLater(() -> {
             dealerHandPanel.add(new VisualCard(rank, suit, null));
@@ -127,7 +129,7 @@ public class BlackjackGameGUI extends JFrame {
             dealerHandPanel.repaint();
         });
     }
-
+    //Updates the score label with color indicators for bust/blackjack
     public void setScore(String dealer, String player) {
         SwingUtilities.invokeLater(() -> {
             scoreLabel.setText("Dealer: " + dealer + " | You: " + player);
@@ -143,12 +145,12 @@ public class BlackjackGameGUI extends JFrame {
             }
         });
     }
-
+    //Updates the status message and logs it to console
     public void setStatus(String text) {
         SwingUtilities.invokeLater(() -> statusLabel.setText(text));
         System.out.println("BLACKJACK LOG: " + text);
     }
-
+    //Replaces the dealer panel content with a final result message
     public void showGameOver(String text, Color color) {
         SwingUtilities.invokeLater(() -> {
             dealerHandPanel.removeAll();
@@ -160,7 +162,7 @@ public class BlackjackGameGUI extends JFrame {
             dealerHandPanel.repaint();
         });
     }
-
+    //Custom JPanel with a linear gradient background and glow effects
     private static class GradientPanel extends JPanel {
         @Override
         protected void paintComponent(Graphics g) {

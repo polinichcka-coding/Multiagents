@@ -2,54 +2,77 @@ package proj1.proj1;
 
 import jade.core.*;
 import jade.core.behaviours.*;
+import jade.domain.FIPAException;
 import jade.lang.acl.ACLMessage;
 import jade.domain.DFService;
 import jade.domain.FIPAAgentManagement.*;
 import proj1.ontology.*;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.*;
 
 public class BlackjackProviderAgent extends Agent {
     private List<Card> deck = new ArrayList<>();
     private List<Card> playerHand = new ArrayList<>();
     private List<Card> dealerHand = new ArrayList<>();
-    private AID currentPlayer;
+    private AID currentPlayer; // Agent ID гравця, з яким зараз йде гра
     private boolean gameOver = false;
 
     protected void setup() {
-        System.out.println("♠️ Blackjack Server Started: " + getLocalName());
+        String description = "Standard Blackjack Table";
+        String serviceType = "card-game-provider";
 
-        // --- РЕГИСТРАЦИЯ В DF (Чтобы UserAgent нашел лобби) ---
+        // Try to load game description from external JSON config
+        try {
+            byte[] encoded = Files.readAllBytes(Paths.get("blackjack_cfg.json"));
+            String content = new String(encoded, java.nio.charset.StandardCharsets.UTF_8);
+            if (content.contains("description")) {
+                description = content.split("\"description\": \"")[1].split("\"")[0];
+            }
+            System.out.println("[CONFIG] Downloaded description: " + description);
+        } catch (IOException e) {
+            System.out.println("[CONFIG] wasn't found. Use default configuration.");
+        }
+
+        // Register the agent in the Directory Facilitator (Yellow Pages)
         DFAgentDescription dfd = new DFAgentDescription();
         dfd.setName(getAID());
+
         ServiceDescription sd = new ServiceDescription();
-        sd.setType("card-game-provider"); // Тот же тип, что и у Дурака
-        sd.setName(getLocalName());
+        sd.setType(serviceType);
+        sd.setName(description);
         dfd.addServices(sd);
         try {
             DFService.register(this, dfd);
+            System.out.println("Service '" + serviceType + "' registered successfully.");
         } catch (Exception fe) {
-            fe.printStackTrace();
+            System.err.println("Error of registration in DF: " + fe.getMessage());
         }
 
         initDeck();
+        System.out.println("♠️ Blackjack Server is ready: " + getLocalName());
 
+        // Continuous message listening behavior
         addBehaviour(new CyclicBehaviour() {
             public void action() {
                 ACLMessage msg = receive();
                 if (msg != null) {
                     processMessage(msg);
                 } else {
-                    block();
+                    block(); // Suspend behavior until new message arrives
                 }
             }
         });
     }
 
-    // Удаление из DF при выключении
+    // Deregister from DF when agent is terminated
     protected void takeDown() {
         try { DFService.deregister(this); } catch (Exception e) {}
     }
 
+    // Simple message router based on content string
     private void processMessage(ACLMessage msg) {
         String content = msg.getContent();
         if (content.equals("JOIN_BJ")) {
@@ -68,53 +91,39 @@ public class BlackjackProviderAgent extends Agent {
         playerHand.clear();
         dealerHand.clear();
 
-        // Начальная раздача
+        // Initial deal: 2 cards each
         playerHand.add(drawCard());
         playerHand.add(drawCard());
-        dealerHand.add(drawCard()); // Видимая
-        dealerHand.add(drawCard()); // Скрытая (HIDDEN)
+        dealerHand.add(drawCard());
+        dealerHand.add(drawCard());
 
+        // Immediate check for natural Blackjack
         if (calculateScore(playerHand) == 21) {
             updateClient();
-            handleStand(player); // Сразу переходим к дилеру
+            handleStand(player);
         } else {
             updateClient();
         }
     }
 
-//    private void handleHit(AID player) {
-//        if (gameOver) return;
-//        playerHand.add(drawCard());
-//
-//        if (calculateScore(playerHand) > 21) {
-//            endGame("BUST! YOU LOSE.");
-//        } else {
-//            updateClient();
-//        }
-//    }
-
     private void handleStand(AID player) {
         if (gameOver) return;
 
-        // Запускаем поток, чтобы не блокировать агента
+        // Dealer logic runs in a separate thread to allow UI updates with delays
         new Thread(() -> {
             try {
-                // 1. Сначала "открываем" скрытую карту (просто обновляем UI без HIDDEN)
                 System.out.println("[BJ] Dealer reveals hidden card...");
-                updateClientFull(); // Специальный метод для показа всех карт
+                updateClientFull(); // Show all dealer cards
                 Thread.sleep(2000);
 
-                // 2. Дилер добирает карты, если нужно
+                // Dealer must hit until score is at least 17
                 while (calculateScore(dealerHand) < 17) {
                     Card newCard = drawCard();
                     dealerHand.add(newCard);
                     System.out.println("[BJ] Dealer hits: " + newCard.getRank());
-
-                    updateClientFull(); // Показываем новую карту игроку
-                    Thread.sleep(2000); // Задержка 2 секунды перед следующим действием
+                    updateClientFull();
+                    Thread.sleep(2000);
                 }
-
-                // 3. Когда дилер закончил, определяем победителя
                 determineWinner();
 
             } catch (InterruptedException e) {
@@ -141,12 +150,13 @@ public class BlackjackProviderAgent extends Agent {
         endGame(result);
     }
 
-    // Новый метод для обновления клиента БЕЗ скрытия карт
+    // Sends the full state of both hands (no hidden cards)
     private void updateClientFull() {
         String data = "BJ_STATE:P=" + handToString(playerHand) + ":D=" + handToString(dealerHand);
         sendText(currentPlayer, data);
     }
 
+    // Blackjack scoring logic including Ace handling (1 or 11)
     private int calculateScore(List<Card> hand) {
         int score = 0;
         int aces = 0;
@@ -156,6 +166,7 @@ public class BlackjackProviderAgent extends Agent {
             else if (r.equals("K") || r.equals("Q") || r.equals("J") || r.equals("10")) score += 10;
             else score += Integer.parseInt(r);
         }
+        // If bust, convert Aces from 11 to 1
         while (score > 21 && aces > 0) {
             score -= 10;
             aces--;
@@ -163,32 +174,10 @@ public class BlackjackProviderAgent extends Agent {
         return score;
     }
 
-//    private void updateClient() {
-//        // В процессе игры (Hit) вторая карта дилера заменяется на HIDDEN
-//        String data = "BJ_STATE:P=" + handToString(playerHand) + ":D=" + dealerHand.get(0).getRank() + ", HIDDEN";
-//        sendText(currentPlayer, data);
-//    }
-
     private void endGame(String result) {
         gameOver = true;
-        // Отправляем финальное сообщение
         sendText(currentPlayer, "GAME_OVER:" + result);
     }
-
-//    private void initDeck() {
-//        deck.clear();
-//        String[] suits = {"Hearts", "Diamonds", "Clubs", "Spades"};
-//        String[] ranks = {"2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"};
-//        for (String s : suits) {
-//            for (String r : ranks) {
-//                Card c = new Card();
-//                c.setRank(r);
-//                c.setSuit(s);
-//                deck.add(c);
-//            }
-//        }
-//        Collections.shuffle(deck);
-//    }
 
     private Card drawCard() {
         if (deck.isEmpty()) initDeck();
@@ -204,6 +193,7 @@ public class BlackjackProviderAgent extends Agent {
         return sb.toString();
     }
 
+    // Utility method to send an ACL INFORM message
     private void sendText(AID receiver, String text) {
         ACLMessage m = new ACLMessage(ACLMessage.INFORM);
         m.addReceiver(receiver);
@@ -211,13 +201,13 @@ public class BlackjackProviderAgent extends Agent {
         send(m);
     }
 
-    // Измени инициализацию колоды на 5 штук
+    // Initialize deck with 5 sets of cards (multi-deck) and shuffle
     private void initDeck() {
         deck.clear();
         String[] suits = {"Hearts", "Diamonds", "Clubs", "Spades"};
         String[] ranks = {"2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"};
 
-        for (int i = 0; i < 5; i++) { // ПЯТЬ КОЛОД
+        for (int i = 0; i < 5; i++) {
             for (String s : suits) {
                 for (String r : ranks) {
                     Card c = new Card();
@@ -237,29 +227,41 @@ public class BlackjackProviderAgent extends Agent {
 
         updateClient();
 
+        // Check for bust after hitting
         if (score > 21) {
             new Thread(() -> {
                 try { Thread.sleep(1000); } catch (InterruptedException e) {}
                 endGame("BUST! YOU LOSE.");
             }).start();
         } else if (score == 21) {
-            // Standard 21 (from hitting), not a Natural BJ
-            handleStand(player);
+            handleStand(player); // Auto-stand on 21
         }
     }
 
+    // Updates the client while keeping the dealer's second card hidden
     private void updateClient() {
         int pScore = calculateScore(playerHand);
-        // Check for Natural Blackjack (only possible with exactly 2 cards)
         boolean isBJ = (pScore == 21 && playerHand.size() == 2);
-
         String pLabel = isBJ ? "BJ" : String.valueOf(pScore);
-        int dScore = calculateScore(Collections.singletonList(dealerHand.get(0)));
 
-        // We send "BJ" as the score if it's a natural
+        // Show only the first dealer card to the player
+        int dScore = calculateScore(Collections.singletonList(dealerHand.get(0)));
         String data = "BJ_STATE:P=" + handToString(playerHand) +
                 ":D=" + dealerHand.get(0).getRank() + ", HIDDEN" +
                 ":SCORES:" + pLabel + ":" + dScore;
         sendText(currentPlayer, data);
+    }
+
+    // Helper to register service in JADE Yellow Pages
+    private void registerInDF(String type, String desc) {
+        DFAgentDescription dfd = new DFAgentDescription();
+        dfd.setName(getAID());
+        ServiceDescription sd = new ServiceDescription();
+        sd.setType(type);
+        sd.setName(desc);
+        dfd.addServices(sd);
+        try {
+            DFService.register(this, dfd);
+        } catch (FIPAException fe) { fe.printStackTrace(); }
     }
 }

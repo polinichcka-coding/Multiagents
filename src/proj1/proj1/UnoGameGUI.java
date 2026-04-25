@@ -126,6 +126,23 @@ public class UnoGameGUI extends JFrame {
         });
     }
 
+    // NEW: SHOW DEALER CARD
+    public void showDealerPlayedCard(String dealerRank, String dealerSuit) {
+        SwingUtilities.invokeLater(() -> {
+            tablePanel.removeAll();
+
+            JLabel dealerLabel = new JLabel("Dealer played:");
+            dealerLabel.setForeground(Color.WHITE);
+            dealerLabel.setFont(new Font("Arial", Font.BOLD, 18));
+
+            tablePanel.add(dealerLabel);
+            tablePanel.add(new VisualCard(dealerRank, dealerSuit, null));
+
+            tablePanel.revalidate();
+            tablePanel.repaint();
+        });
+    }
+
     public void setStatus(String text) {
         SwingUtilities.invokeLater(() -> statusLabel.setText(text));
         System.out.println("UNO LOG: " + text);
@@ -167,6 +184,7 @@ public class UnoGameGUI extends JFrame {
             g2.fillOval(-130, -130, 310, 310);
         }
     }
+
     public void showPlayerThenDealerCard(String playerRank, String playerSuit,
                                          String dealerRank, String dealerSuit) {
         SwingUtilities.invokeLater(() -> {

@@ -2,11 +2,16 @@ package proj1.proj1;
 
 import jade.core.*;
 import jade.core.behaviours.*;
+import jade.domain.DFService;
+import jade.domain.FIPAAgentManagement.DFAgentDescription;
+import jade.domain.FIPAAgentManagement.ServiceDescription;
+import jade.domain.FIPAException;
 import jade.lang.acl.ACLMessage;
 import jade.content.lang.sl.SLCodec;
 import jade.content.onto.basic.Action;
 import proj1.ontology.*;
 
+import javax.swing.*;
 import java.awt.*;
 
 public class UserAgent extends Agent {
@@ -42,18 +47,23 @@ public class UserAgent extends Agent {
     }
 
     public void startDurakGame() {
+        AID durakAID = discoverService("durak-game-provider");
+        if (durakAID == null) {
+            System.out.println("No Durak service found!");
+            return;
+        }
+        selectedServerName = durakAID.getLocalName();
         currentGame = "DURAK";
-        selectedServerName = "Durak";
         pendingCard = null;
 
         pickerGui.setVisible(false);
         durakGui = new DurakGameGUI(this);
         durakGui.setVisible(true);
-        durakGui.updateLog("Joining Durak...");
+        durakGui.updateLog("Joining Durak (Server: " + selectedServerName + ")...");
 
         SubscribeToGame sub = new SubscribeToGame();
         sub.setGameName1("Durak");
-        sendRequest(new AID(selectedServerName, AID.ISLOCALNAME), sub);
+        sendRequest(durakAID, sub);
     }
 
     public void startBlackjackGame() {
@@ -100,9 +110,7 @@ public class UserAgent extends Agent {
                 handleCardsDealt((CardsDealt) content);
                 return;
             }
-        } catch (Exception ignored) {
-            // Plain text message, handled below.
-        }
+        } catch (Exception ignored) {}
 
         String txt = msg.getContent();
         if (txt == null) return;
@@ -168,11 +176,6 @@ public class UserAgent extends Agent {
             durakGui.doneButton.setEnabled(isAttacker);
             durakGui.takeButton.setEnabled(!isAttacker);
         }
-        else if (txt.contains("Your turn to attack") || txt.contains("Attack me again")) {
-            durakGui.setTurnUI(true);
-            durakGui.doneButton.setEnabled(true);
-            durakGui.takeButton.setEnabled(false);
-        }
         else if (txt.startsWith("RETURN_CARD:")) {
             String[] p = txt.split(":");
             durakGui.addVisualCardToHand(p[1], p[2]);
@@ -188,22 +191,10 @@ public class UserAgent extends Agent {
             durakGui.addUserAttackToTable(p[1], p[2]);
             pendingCard = null;
         }
-        else if (txt.equals("RESET_PENDING")) {
-            pendingCard = null;
-        }
-        else if (txt.contains("Correct!")) {
-            pendingCard = null;
-            durakGui.updateLog("Defense accepted.");
-        }
-        else if (txt.contains("Can't play") || txt.contains("Illegal move")) {
-            durakGui.updateLog(txt);
-            pendingCard = null;
-        }
         else if (txt.startsWith("GAME_OVER:")) {
             String result = txt.split(":")[1];
             Color c = result.contains("WIN") ? Color.ORANGE : Color.RED;
             durakGui.displayEndGameMessage(result, c);
-            durakGui.updateLog(result);
         }
         else {
             durakGui.updateLog(txt);
@@ -218,40 +209,27 @@ public class UserAgent extends Agent {
             blackjackGui.clearCards();
 
             if (parts.length >= 6) {
-                String pScoreStr = parts[4];
-                String dScore = parts[5];
-                blackjackGui.setScore(dScore, pScoreStr);
+                blackjackGui.setScore(parts[5], parts[4]);
             }
 
             if (parts.length >= 3) {
-                String playerPart = parts[1].replace("P=", "");
-                String[] pCards = playerPart.split(",");
-
+                String[] pCards = parts[1].replace("P=", "").split(",");
                 for (String pRank : pCards) {
-                    if (!pRank.trim().isEmpty()) {
-                        blackjackGui.addPlayerCard(pRank.trim(), "Hearts");
-                    }
+                    if (!pRank.trim().isEmpty()) blackjackGui.addPlayerCard(pRank.trim(), "Hearts");
                 }
 
-                String dealerPart = parts[2].replace("D=", "");
-                String[] dCards = dealerPart.split(",");
-
+                String[] dCards = parts[2].replace("D=", "").split(",");
                 for (String dRank : dCards) {
                     String rank = dRank.trim();
-                    if (rank.equalsIgnoreCase("HIDDEN")) {
-                        blackjackGui.addDealerCard("?", "BACK");
-                    } else if (!rank.isEmpty()) {
-                        blackjackGui.addDealerCard(rank, "Spades");
-                    }
+                    if (rank.equalsIgnoreCase("HIDDEN")) blackjackGui.addDealerCard("?", "BACK");
+                    else if (!rank.isEmpty()) blackjackGui.addDealerCard(rank, "Spades");
                 }
             }
         }
         else if (txt.startsWith("GAME_OVER:")) {
             String result = txt.split(":")[1];
-            Color c = result.contains("WIN") ? Color.ORANGE :
-                    (result.contains("DRAW") || result.contains("PUSH") ? Color.WHITE : Color.RED);
+            Color c = result.contains("WIN") ? Color.ORANGE : (result.contains("DRAW") ? Color.WHITE : Color.RED);
             blackjackGui.showGameOver(result, c);
-            blackjackGui.setStatus(result);
         }
         else {
             blackjackGui.setStatus(txt);
@@ -259,23 +237,41 @@ public class UserAgent extends Agent {
     }
 
     private void handleUnoText(String txt) {
+        if (unoGui == null) return;
+
         if (txt.startsWith("UNO_TOP:")) {
             String[] p = txt.split(":");
             unoGui.showTopCard(p[1], p[2]);
             pendingCard = null;
         }
-        else if (txt.startsWith("UNO_SEQUENCE:")) {
+        else if (txt.startsWith("UNO_DEALER:")) {
             String[] p = txt.split(":");
-
-            unoGui.showPlayerThenDealerCard(
-                    p[1], p[2],
-                    p[3], p[4]
-            );
-
+            unoGui.showDealerPlayedCard(p[1], p[2]);
             pendingCard = null;
         }
         else if (txt.startsWith("UNO_STATUS:")) {
-            unoGui.setStatus(txt.substring("UNO_STATUS:".length()));
+            String status = txt.substring("UNO_STATUS:".length());
+            unoGui.setStatus(status);
+
+            if (status.toLowerCase().contains("choose a color")) {
+                SwingUtilities.invokeLater(() -> {
+                    String[] options = {"Red", "Blue", "Green", "Yellow"};
+
+                    String chosen = (String) JOptionPane.showInputDialog(
+                            unoGui,
+                            "Choose a color:",
+                            "UNO Wild Card",
+                            JOptionPane.PLAIN_MESSAGE,
+                            null,
+                            options,
+                            "Red"
+                    );
+
+                    if (chosen != null) {
+                        sendUnoColorChoice(chosen);
+                    }
+                });
+            }
         }
         else if (txt.startsWith("UNO_DECK:")) {
             unoGui.setDeck(Integer.parseInt(txt.split(":")[1]));
@@ -287,17 +283,8 @@ public class UserAgent extends Agent {
         }
         else if (txt.startsWith("UNO_GAME_OVER:")) {
             String result = txt.substring("UNO_GAME_OVER:".length());
-
-            if (result.equals("YOU WIN")) {
-                unoGui.showGameOver("YOU WIN 🎉", Color.GREEN);
-            } else {
-                unoGui.showGameOver("DEALER WINS", Color.RED);
-            }
-
+            unoGui.showGameOver(result, result.equals("YOU WIN") ? Color.GREEN : Color.RED);
             pendingCard = null;
-        }
-        else {
-            unoGui.setStatus(txt);
         }
     }
 
@@ -306,7 +293,6 @@ public class UserAgent extends Agent {
 
         if ("UNO".equals(currentGame)) {
             if (pendingCard != null || unoGui == null) return;
-
             pendingCard = visualCardComponent;
             unoGui.removeCard(visualCardComponent);
 
@@ -317,13 +303,10 @@ public class UserAgent extends Agent {
             m.setPlayedCard(c);
 
             sendRequest(new AID("UNO", AID.ISLOCALNAME), m);
-            return;
         }
 
         if ("DURAK".equals(currentGame)) {
             if (selectedServerName == null || pendingCard != null || durakGui == null) return;
-            if (visualCardComponent.getParent() != durakGui.visualHandPanel) return;
-
             pendingCard = visualCardComponent;
             durakGui.removeVisualCard(visualCardComponent);
 
@@ -338,58 +321,46 @@ public class UserAgent extends Agent {
     }
 
     public void sendDurakTakeRequest() {
-        if (!"DURAK".equals(currentGame) || selectedServerName == null || durakGui == null) return;
-
-        if (pendingCard != null) {
-            durakGui.addVisualCardToHand(pendingCard.getRank(), pendingCard.getSuit());
-            pendingCard = null;
-        }
-
+        if (!"DURAK".equals(currentGame) || selectedServerName == null) return;
         ACLMessage m = new ACLMessage(ACLMessage.INFORM);
         m.addReceiver(new AID(selectedServerName, AID.ISLOCALNAME));
         m.setContent("TAKE_CARDS");
         send(m);
-
-        durakGui.updateLog("Requesting to take cards...");
-        durakGui.takeButton.setEnabled(false);
     }
 
     public void sendDurakDoneRequest() {
-        if (!"DURAK".equals(currentGame) || selectedServerName == null || durakGui == null) return;
-
+        if (!"DURAK".equals(currentGame) || selectedServerName == null) return;
         ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
         msg.addReceiver(new AID(selectedServerName, AID.ISLOCALNAME));
         msg.setContent("DONE_ROUND");
         send(msg);
-
-        durakGui.updateLog("Sent DONE/PASS");
     }
 
     public void sendBlackjackCommand(String command) {
-        if (!"BLACKJACK".equals(currentGame) || selectedServerName == null || blackjackGui == null) return;
-
+        if (!"BLACKJACK".equals(currentGame)) return;
         ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
         msg.addReceiver(new AID(selectedServerName, AID.ISLOCALNAME));
         msg.setContent(command);
         send(msg);
-
-        blackjackGui.setStatus("Action: " + command);
     }
 
     public void sendUnoDrawRequest() {
-        if (!"UNO".equals(currentGame) || unoGui == null) return;
-
-        if (pendingCard != null) {
-            unoGui.addCardToHand(pendingCard.getRank(), pendingCard.getSuit());
-            pendingCard = null;
-        }
-
+        if (!"UNO".equals(currentGame)) return;
         ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
         msg.addReceiver(new AID("UNO", AID.ISLOCALNAME));
         msg.setContent("UNO_DRAW");
         send(msg);
+    }
 
-        unoGui.setStatus("Drawing card...");
+    public void sendUnoColorChoice(String color) {
+        if (!"UNO".equals(currentGame)) return;
+
+        pendingCard = null;
+
+        ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
+        msg.addReceiver(new AID("UNO", AID.ISLOCALNAME));
+        msg.setContent("UNO_CHOOSE_COLOR:" + color);
+        send(msg);
     }
 
     public void exitCurrentGame() {
@@ -397,21 +368,10 @@ public class UserAgent extends Agent {
         currentGame = "NONE";
         pendingCard = null;
 
-        if (durakGui != null) {
-            durakGui.dispose();
-            durakGui = null;
-        }
-        if (blackjackGui != null) {
-            blackjackGui.dispose();
-            blackjackGui = null;
-        }
-        if (unoGui != null) {
-            unoGui.dispose();
-            unoGui = null;
-        }
-        if (pickerGui != null) {
-            pickerGui.setVisible(true);
-        }
+        if (durakGui != null) { durakGui.dispose(); durakGui = null; }
+        if (blackjackGui != null) { blackjackGui.dispose(); blackjackGui = null; }
+        if (unoGui != null) { unoGui.dispose(); unoGui = null; }
+        if (pickerGui != null) pickerGui.setVisible(true);
     }
 
     private void sendRequest(AID receiver, jade.content.AgentAction action) {
@@ -419,12 +379,28 @@ public class UserAgent extends Agent {
         msg.addReceiver(receiver);
         msg.setLanguage(codec.getName());
         msg.setOntology(CardGameOntology.getInstance().getName());
-
         try {
             getContentManager().fillContent(msg, new Action(receiver, action));
             send(msg);
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (Exception e) { e.printStackTrace(); }
+    }
+
+    private AID discoverService(String serviceType) {
+        DFAgentDescription template = new DFAgentDescription();
+        ServiceDescription sd = new ServiceDescription();
+        sd.setType(serviceType);
+        template.addServices(sd);
+
+        for (int i = 0; i < 10; i++) {
+            try {
+                DFAgentDescription[] result = DFService.search(this, template);
+                if (result.length > 0) return result[0].getName();
+
+            } catch (Exception e) {
+                try { Thread.sleep(300); } catch (Exception ignored) {}
+            }
         }
+
+        return null;
     }
 }

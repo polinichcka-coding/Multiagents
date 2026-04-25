@@ -8,21 +8,23 @@ import jade.content.onto.basic.Action;
 import jade.domain.DFService;
 import jade.domain.FIPAAgentManagement.*;
 import proj1.ontology.*;
-import jade.core.AID; // Обов'язково
-import jade.core.behaviours.WakerBehaviour; // Обов'язково
+import jade.core.AID;
+import jade.core.behaviours.WakerBehaviour;
 import java.util.ArrayList;
 import java.util.List;
 
 public class GameProviderAgent extends Agent {
     private List<Card> serverHand = new ArrayList<>();
     private String trumpSuit;
-    private boolean isPlayerTurn = true; // Починаємо з ходу гравця
+    private boolean isPlayerTurn = true; // Tracks which participant is currently attacking
 
     protected void setup() {
+        // Register language and ontology for JADE communication
         getContentManager().registerLanguage(new SLCodec());
         getContentManager().registerOntology(CardGameOntology.getInstance());
         registerInDF();
 
+        // Main behavior for processing incoming messages
         addBehaviour(new CyclicBehaviour() {
             public void action() {
                 ACLMessage msg = receive();
@@ -52,6 +54,7 @@ public class GameProviderAgent extends Agent {
     }
 
     private void handleJoin(ACLMessage reply) throws Exception {
+        // Initialize game state: deck, trumps, and initial hands
         serverHand.clear();
         String[] suits = {"Hearts", "Diamonds", "Clubs", "Spades"};
         trumpSuit = suits[(int)(Math.random()*4)];
@@ -59,39 +62,40 @@ public class GameProviderAgent extends Agent {
 
         CardsDealt cd = new CardsDealt();
         for(int i=0; i<6; i++) {
-            cd.getCards().add(generateCard());
-            serverHand.add(generateCard());
+            cd.getCards().add(generateCard()); // Dealt to player
+            serverHand.add(generateCard());    // Dealt to bot
         }
 
-        // ВАЖЛИВО: Спочатку очищуємо контент, потім наповнюємо об'єктом
         reply.setContent("");
         getContentManager().fillContent(reply, cd);
 
-        // Щоб гравець знав козир, виведемо це в консоль або надішлемо пізніше
         System.out.println("New Game Started. Trump: " + trumpSuit);
     }
+
     private void handlePlayerMove(Card pCard, ACLMessage reply, AID player) {
         int pRank = Integer.parseInt(pCard.getRank());
 
-        // Якщо гравець атакує
+        // Scenario: Server is defending against player attack
         if (isPlayerTurn) {
             for (Card sCard : serverHand) {
                 if (canBeat(pCard, sCard)) {
                     serverHand.remove(sCard);
-                    isPlayerTurn = false; // Тепер черга сервера атакувати
-                    reply.setContent("✅ I beat it with " + sCard.getRank() + " of " + sCard.getSuit() + ". My turn to attack!");
+                    isPlayerTurn = false; // Turn switch to server attack
+                    reply.setContent("I beat it with " + sCard.getRank() + " of " + sCard.getSuit() + ". My turn to attack!");
+                    // Delay before bot makes its move
                     addBehaviour(new WakerBehaviour(this, 2000) {
                         protected void onWake() { sendServerAttack(player); }
                     });
                     return;
                 }
             }
+            // If bot cannot beat the card, it picks it up
             serverHand.add(pCard);
-            reply.setContent("❌ I TAKE IT! You can attack again.");
-            isPlayerTurn = true; // Гравець ходить знову, бо сервер взяв
+            reply.setContent("I TAKE IT! You can attack again.");
+            isPlayerTurn = true;
         } else {
-            // Якщо гравець відбивається від атаки сервера
-            reply.setContent("✅ Nice defense! My turn again.");
+            // Scenario: Player successfully defended against server attack
+            reply.setContent("Nice defense! My turn again.");
             isPlayerTurn = false;
             addBehaviour(new WakerBehaviour(this, 1000) {
                 protected void onWake() { sendServerAttack(player); }
@@ -100,6 +104,7 @@ public class GameProviderAgent extends Agent {
     }
 
     private boolean canBeat(Card attack, Card defense) {
+        // Logic for comparing card values including trump suit advantages
         int aR = Integer.parseInt(attack.getRank());
         int dR = Integer.parseInt(defense.getRank());
 
@@ -109,6 +114,7 @@ public class GameProviderAgent extends Agent {
     }
 
     private void sendServerAttack(AID player) {
+        // Bot selects a card to attack the player
         if (serverHand.isEmpty()) return;
         Card c = serverHand.remove(0);
         ACLMessage m = new ACLMessage(ACLMessage.INFORM);
@@ -118,6 +124,7 @@ public class GameProviderAgent extends Agent {
     }
 
     private Card generateCard() {
+        // Random card generator for ranks 6-14 (Durak deck)
         Card c = new Card();
         c.setSuit(new String[]{"Hearts", "Diamonds", "Clubs", "Spades"}[(int)(Math.random()*4)]);
         c.setRank(String.valueOf((int)(Math.random()*9) + 6));
@@ -125,6 +132,7 @@ public class GameProviderAgent extends Agent {
     }
 
     private void registerInDF() {
+        // Register agent in Directory Facilitator for service discovery
         DFAgentDescription dfd = new DFAgentDescription();
         ServiceDescription sd = new ServiceDescription();
         sd.setType("card-game-provider");
