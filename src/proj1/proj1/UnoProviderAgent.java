@@ -43,9 +43,8 @@ public class UnoProviderAgent extends Agent {
         if (msg.getContent() != null) {
             String content = msg.getContent();
 
-            // PLAYER DRAWS
+            // ПІДБІР КАРТИ (Гравець просто бере карту, хід не переходить)
             if ("UNO_DRAW".equals(content)) {
-
                 if (!playerTurn) {
                     sendText(msg.getSender(), "UNO_STATUS:Not your turn!");
                     return;
@@ -66,23 +65,28 @@ public class UnoProviderAgent extends Agent {
                 sendText(msg.getSender(), "UNO_DECK:" + deck.size());
 
                 if (canPlay(drawn)) {
-                    sendText(msg.getSender(), "UNO_STATUS:You drew a playable card. You may play it!");
+                    sendText(msg.getSender(), "UNO_STATUS:You drew " + drawn.getRank() + " " + drawn.getSuit() + ". You may play it or PASS.");
                 } else {
-                    sendText(msg.getSender(), "UNO_STATUS:You drew a card. Dealer's turn.");
-                    playerTurn = false;
-                    botMove(msg.getSender());
+                    sendText(msg.getSender(), "UNO_STATUS:You drew a card. No move possible? Send UNO_PASS.");
                 }
                 return;
             }
 
-            // PLAYER CHOOSES COLOR AFTER WILD
+            // ПАС (Явний перехід ходу до бота)
+            if ("UNO_PASS".equals(content)) {
+                if (!playerTurn) return;
+
+                sendText(msg.getSender(), "UNO_STATUS:You passed. Dealer's turn.");
+                playerTurn = false;
+                botMove(msg.getSender());
+                return;
+            }
+
+            // ВИБІР КОЛЬОРУ (Після Wild)
             if (content.startsWith("UNO_CHOOSE_COLOR:")) {
                 String chosenColor = content.split(":")[1];
 
-                if (!chosenColor.equalsIgnoreCase("Red") &&
-                        !chosenColor.equalsIgnoreCase("Blue") &&
-                        !chosenColor.equalsIgnoreCase("Green") &&
-                        !chosenColor.equalsIgnoreCase("Yellow")) {
+                if (!isValidColor(chosenColor)) {
                     sendText(msg.getSender(), "UNO_STATUS:Invalid color choice!");
                     return;
                 }
@@ -95,7 +99,7 @@ public class UnoProviderAgent extends Agent {
             }
         }
 
-        // ONTOLOGY REQUESTS
+        // ONTOLOGY REQUESTS (PlayMove, Subscribe)
         try {
             Object content = getContentManager().extractContent(msg);
 
@@ -113,14 +117,12 @@ public class UnoProviderAgent extends Agent {
                     return;
                 }
             }
-
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
     private void startGame(AID player) {
-
         initDeck();
         playerHand.clear();
         botHand.clear();
@@ -131,15 +133,8 @@ public class UnoProviderAgent extends Agent {
         for (int i = 0; i < 7; i++) {
             Card p = drawCard();
             Card b = drawCard();
-
-            if (p != null) {
-                playerHand.add(p);
-                cards.addCards(p);
-            }
-
-            if (b != null) {
-                botHand.add(b);
-            }
+            if (p != null) { playerHand.add(p); cards.addCards(p); }
+            if (b != null) { botHand.add(b); }
         }
 
         topCard = drawCard();
@@ -150,7 +145,6 @@ public class UnoProviderAgent extends Agent {
         }
 
         currentActiveSuit = topCard.getSuit();
-
         sendCards(player, cards);
 
         addBehaviour(new OneShotBehaviour() {
@@ -163,7 +157,6 @@ public class UnoProviderAgent extends Agent {
     }
 
     private void playCard(AID player, Card playerCard) {
-
         if (!playerTurn) {
             sendText(player, "UNO_STATUS:Not your turn!");
             sendText(player, "UNO_RETURN:" + playerCard.getRank() + ":" + playerCard.getSuit());
@@ -177,11 +170,12 @@ public class UnoProviderAgent extends Agent {
         }
 
         if (!canPlay(playerCard)) {
-            sendText(player, "UNO_STATUS:Invalid move!");
+            sendText(player, "UNO_STATUS:Invalid move! Match color or rank.");
             sendText(player, "UNO_RETURN:" + playerCard.getRank() + ":" + playerCard.getSuit());
             return;
         }
 
+        // Якщо хід валідний:
         removeCardFromHand(playerHand, playerCard);
         topCard = playerCard;
 
@@ -196,33 +190,31 @@ public class UnoProviderAgent extends Agent {
             return;
         }
 
-        // WILD
+        // WILD CARD - чекаємо вибору кольору (playerTurn залишається true до вибору)
         if (playerCard.getSuit().equalsIgnoreCase("Black")) {
             sendText(player, "UNO_STATUS:Choose a color (UNO_CHOOSE_COLOR:Red/Blue/Green/Yellow)");
             return;
         }
 
-        // SKIP / REVERSE
+        // SKIP / REVERSE / +2 (Гравець ходить знову)
         if (playerCard.getRank().equalsIgnoreCase("Skip") ||
                 playerCard.getRank().equalsIgnoreCase("Reverse")) {
-            sendText(player, "UNO_STATUS:You skipped dealer. Play again!");
+            sendText(player, "UNO_STATUS:Opponent skipped. Play again!");
             return;
         }
 
-        // +2
         if (playerCard.getRank().equalsIgnoreCase("+2")) {
             botDrawCards(2);
             sendText(player, "UNO_STATUS:Dealer draws 2. Your turn again!");
             return;
         }
 
+        // Звичайний хід - передаємо боту
         playerTurn = false;
         botMove(player);
     }
 
-    // BOT MOVE WITH DELAY VISUALIZATION
     private void botMove(AID player) {
-
         Card chosen = choosePlayableCard(botHand);
 
         if (chosen == null) {
@@ -249,24 +241,21 @@ public class UnoProviderAgent extends Agent {
             currentActiveSuit = chosen.getSuit();
         }
 
-        sendText(player, "UNO_DECK:" + deck.size());
-
         Card finalChosen = chosen;
 
-        // DELAY so player sees dealer card
         addBehaviour(new WakerBehaviour(this, 1500) {
             protected void onWake() {
-
                 sendText(player, "UNO_DEALER:" + finalChosen.getRank() + ":" + finalChosen.getSuit());
                 sendText(player, "UNO_TOP:" + topCard.getRank() + ":" + topCard.getSuit());
                 sendText(player, "UNO_STATUS:Dealer played " + finalChosen.getRank() + " (" + currentActiveSuit + ")");
+                sendText(player, "UNO_DECK:" + deck.size());
 
                 if (botHand.isEmpty()) {
                     sendText(player, "UNO_GAME_OVER:DEALER WINS");
                     return;
                 }
 
-                // SKIP / REVERSE
+                // Ефекти карт бота
                 if (finalChosen.getRank().equalsIgnoreCase("Skip") ||
                         finalChosen.getRank().equalsIgnoreCase("Reverse")) {
                     sendText(player, "UNO_STATUS:Dealer skipped your turn!");
@@ -274,7 +263,6 @@ public class UnoProviderAgent extends Agent {
                     return;
                 }
 
-                // +2
                 if (finalChosen.getRank().equalsIgnoreCase("+2")) {
                     giveCards(player, 2);
                     sendText(player, "UNO_STATUS:Dealer played +2. You draw 2.");
@@ -282,7 +270,6 @@ public class UnoProviderAgent extends Agent {
                     return;
                 }
 
-                // +4
                 if (finalChosen.getRank().equalsIgnoreCase("+4")) {
                     giveCards(player, 4);
                     sendText(player, "UNO_STATUS:Dealer played +4. You draw 4.");
@@ -296,6 +283,8 @@ public class UnoProviderAgent extends Agent {
         });
     }
 
+    // --- ДОПОМІЖНІ МЕТОДИ ---
+
     private void botDrawCards(int count) {
         for (int i = 0; i < count; i++) {
             Card c = drawCard();
@@ -305,54 +294,51 @@ public class UnoProviderAgent extends Agent {
 
     private boolean canPlay(Card c) {
         if (c == null || topCard == null) return false;
-
         if (c.getSuit().equalsIgnoreCase("Black")) return true;
-
         return c.getSuit().equalsIgnoreCase(currentActiveSuit) ||
                 c.getRank().equalsIgnoreCase(topCard.getRank());
     }
 
     private Card choosePlayableCard(ArrayList<Card> hand) {
-        for (Card c : hand) {
-            if (canPlay(c)) return c;
-        }
+        for (Card c : hand) { if (canPlay(c)) return c; }
         return null;
     }
 
     private String chooseBestColorForBot() {
-        int red = 0, blue = 0, green = 0, yellow = 0;
-
+        int r = 0, b = 0, g = 0, y = 0;
         for (Card c : botHand) {
-            if (c.getSuit().equalsIgnoreCase("Red")) red++;
-            if (c.getSuit().equalsIgnoreCase("Blue")) blue++;
-            if (c.getSuit().equalsIgnoreCase("Green")) green++;
-            if (c.getSuit().equalsIgnoreCase("Yellow")) yellow++;
+            if (c.getSuit().equalsIgnoreCase("Red")) r++;
+            else if (c.getSuit().equalsIgnoreCase("Blue")) b++;
+            else if (c.getSuit().equalsIgnoreCase("Green")) g++;
+            else if (c.getSuit().equalsIgnoreCase("Yellow")) y++;
         }
-
-        int max = Math.max(Math.max(red, blue), Math.max(green, yellow));
-
-        if (max == red) return "Red";
-        if (max == blue) return "Blue";
-        if (max == green) return "Green";
+        int max = Math.max(Math.max(r, b), Math.max(g, y));
+        if (max == r) return "Red";
+        if (max == b) return "Blue";
+        if (max == g) return "Green";
         return "Yellow";
+    }
+
+    private boolean isValidColor(String color) {
+        return color.equalsIgnoreCase("Red") || color.equalsIgnoreCase("Blue") ||
+                color.equalsIgnoreCase("Green") || color.equalsIgnoreCase("Yellow");
     }
 
     private boolean handContains(ArrayList<Card> hand, Card card) {
         for (Card c : hand) {
             if (c.getRank().equalsIgnoreCase(card.getRank()) &&
-                    c.getSuit().equalsIgnoreCase(card.getSuit())) {
-                return true;
-            }
+                    c.getSuit().equalsIgnoreCase(card.getSuit())) return true;
         }
         return false;
     }
 
     private void removeCardFromHand(ArrayList<Card> hand, Card card) {
-        for (int i = 0; i < hand.size(); i++) {
-            Card c = hand.get(i);
+        Iterator<Card> it = hand.iterator();
+        while (it.hasNext()) {
+            Card c = it.next();
             if (c.getRank().equalsIgnoreCase(card.getRank()) &&
                     c.getSuit().equalsIgnoreCase(card.getSuit())) {
-                hand.remove(i);
+                it.remove();
                 return;
             }
         }
@@ -360,25 +346,23 @@ public class UnoProviderAgent extends Agent {
 
     private void initDeck() {
         deck.clear();
-
         String[] colors = {"Red", "Yellow", "Green", "Blue"};
         String[] ranks = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"};
-
         for (String col : colors) {
-
             for (String r : ranks) {
                 addCard(r, col);
                 if (!r.equals("0")) addCard(r, col);
             }
-
-            addCard("Skip", col); addCard("Skip", col);
-            addCard("Reverse", col); addCard("Reverse", col);
-            addCard("+2", col); addCard("+2", col);
+            for (int i = 0; i < 2; i++) {
+                addCard("Skip", col);
+                addCard("Reverse", col);
+                addCard("+2", col);
+            }
         }
-
-        for (int i = 0; i < 4; i++) addCard("Wild", "Black");
-        for (int i = 0; i < 4; i++) addCard("+4", "Black");
-
+        for (int i = 0; i < 4; i++) {
+            addCard("Wild", "Black");
+            addCard("+4", "Black");
+        }
         Collections.shuffle(deck);
     }
 
@@ -395,7 +379,6 @@ public class UnoProviderAgent extends Agent {
 
     private void giveCards(AID player, int count) {
         CardsDealt cards = new CardsDealt();
-
         for (int i = 0; i < count; i++) {
             Card c = drawCard();
             if (c != null) {
@@ -403,7 +386,6 @@ public class UnoProviderAgent extends Agent {
                 playerHand.add(c);
             }
         }
-
         sendCards(player, cards);
         sendText(player, "UNO_DECK:" + deck.size());
     }
@@ -414,13 +396,9 @@ public class UnoProviderAgent extends Agent {
             msg.addReceiver(player);
             msg.setLanguage(codec.getName());
             msg.setOntology(CardGameOntology.getInstance().getName());
-
             getContentManager().fillContent(msg, cards);
             send(msg);
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        } catch (Exception e) { e.printStackTrace(); }
     }
 
     private void sendText(AID player, String text) {
